@@ -44,7 +44,9 @@ This will initiate the testing suite with your specified configurations.
   * Test your favorite mainnet, yourself, and make sure that you can't get Luna'd
   * Test your favorite mainnet, yourself, and make sure that you can't get Levana'd
 
-Over $70,001,400,000 has been lost to the class of issues named p2p storms.   So if you have size
+Over $70,001,400,000 has been lost to the class of issues named p2p storms.  
+
+If you're investing, test the chain.  It's free if you tweet about using meteorite.
 
 - **Valid Transactions Only**: The tool operates within the bounds of valid transactions explicitly supported by the chains it tests.
 - **Reporting Issues**: For questions about meteorite's capabilities or to report potential security issues, please contact the project maintainers through the appropriate channels listed in this repository.
