@@ -24,7 +24,7 @@ import (
 )
 
 var httpClient = &http.Client{
-	Timeout: 1 * time.Second, // Adjusted timeout to 10 seconds
+	Timeout: 10 * time.Second, // Adjusted timeout to 10 seconds
 	Transport: &http.Transport{
 		MaxIdleConns:        100,              // Increased maximum idle connections
 		MaxIdleConnsPerHost: 10,               // Increased maximum idle connections per host
@@ -221,7 +221,7 @@ func CheckBalancesWithinThreshold(balances map[string]sdkmath.Int, threshold flo
 	diff := maxBalance.Sub(minBalance)
 	avg := maxBalance.Add(minBalance).Quo(sdkmath.NewInt(2))
 
-	percentageDiff := diff.ToLegacyDec().Quo(avg.ToLegacyDec()).MustFloat64()
-
-	return percentageDiff <= threshold
+	percentageDiff := diff.ToLegacyDec().Quo(avg.ToLegacyDec())
+	thresholdDec := sdkmath.LegacyNewDec(threshold)
+	return percentageDiff.LTE(thresholdDec)
 }

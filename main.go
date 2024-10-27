@@ -103,17 +103,20 @@ func main() {
 			log.Fatalf("Failed to get balances after adjustment: %v", err)
 		}
 
-		if !lib.CheckBalancesWithinThreshold(balances, 0.10) {
-			totalBalance := sdkmath.ZeroInt()
-			for _, balance := range balances {
-				totalBalance = totalBalance.Add(balance)
-			}
-			if totalBalance.IsZero() {
-				fmt.Println("All accounts have zero balance. Proceeding without adjusting balances.")
-			} else {
-				log.Fatalf("Account balances are still not within 10%% of each other after adjustment")
-			}
+		if lib.CheckBalancesWithinThreshold(balances, 0.10) {
+			return
 		}
+
+		totalBalance := sdkmath.ZeroInt()
+		for _, balance := range balances {
+			totalBalance = totalBalance.Add(balance)
+		}
+		if totalBalance.IsZero() {
+			fmt.Println("All accounts have zero balance. Proceeding without adjusting balances.")
+			return
+		}
+		log.Fatalf("Account balances are still not within 10%% of each other after adjustment")
+	}
 	}
 
 	nodeURL := config.Nodes.RPC[0] // Use the first node
