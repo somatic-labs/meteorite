@@ -18,6 +18,8 @@ import (
 	"github.com/somatic-labs/meteorite/types"
 
 	sdkmath "cosmossdk.io/math"
+
+	sdk "github.com/cosmos/cosmos-sdk/types"
 )
 
 const (
@@ -36,10 +38,18 @@ func main() {
 		log.Fatalf("Failed to read seed phrase: %v", err)
 	}
 
+	// Set Bech32 prefixes and seal the configuration once
+	sdkConfig := sdk.GetConfig()
+	sdkConfig.SetBech32PrefixForAccount(config.Prefix, config.Prefix+"pub")
+	sdkConfig.SetBech32PrefixForValidator(config.Prefix+"valoper", config.Prefix+"valoperpub")
+	sdkConfig.SetBech32PrefixForConsensusNode(config.Prefix+"valcons", config.Prefix+"valconspub")
+	sdkConfig.Seal()
+
 	positions := config.Positions
 	if positions <= 0 {
 		log.Fatalf("Invalid number of positions: %d", positions)
 	}
+	fmt.Println("Positions", positions)
 
 	var accounts []types.Account
 	for i := 0; i < positions; i++ {
@@ -51,6 +61,12 @@ func main() {
 			Address:  acctAddress,
 			Position: position,
 		})
+	}
+
+	// **Print addresses and positions at startup**
+	fmt.Println("Addresses and Positions:")
+	for _, acct := range accounts {
+		fmt.Printf("Position %d: Address: %s\n", acct.Position, acct.Address)
 	}
 
 	// Get balances and ensure they are within 10% of each other
@@ -88,7 +104,15 @@ func main() {
 		}
 
 		if !lib.CheckBalancesWithinThreshold(balances, 0.10) {
-			log.Fatalf("Account balances are still not within 10%% of each other after adjustment")
+			totalBalance := sdkmath.ZeroInt()
+			for _, balance := range balances {
+				totalBalance = totalBalance.Add(balance)
+			}
+			if totalBalance.IsZero() {
+				fmt.Println("All accounts have zero balance. Proceeding without adjusting balances.")
+			} else {
+				log.Fatalf("Account balances are still not within 10%% of each other after adjustment")
+			}
 		}
 	}
 
@@ -271,6 +295,13 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 	for _, balance := range balances {
 		totalBalance = totalBalance.Add(balance)
 	}
+
+	if totalBalance.IsZero() {
+		// All accounts have zero balance; cannot adjust balances
+		fmt.Println("All accounts have zero balance. Cannot adjust balances.")
+		return nil
+	}
+
 	numAccounts := sdkmath.NewInt(int64(len(accounts)))
 	averageBalance := totalBalance.Quo(numAccounts)
 
@@ -299,21 +330,34 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 	var senders, receivers []balanceAdjustment
 	for _, adj := range adjustments {
 		if adj.Amount.IsNegative() {
-			senders = append(senders, adj)
+			// Check if the account has enough balance to send
+			accountBalance := balances[adj.Account.Address]
+			if accountBalance.GT(sdkmath.ZeroInt()) {
+				senders = append(senders, adj)
+			} else {
+				fmt.Printf("Account %s has zero balance, cannot send funds.\n", adj.Account.Address)
+			}
 		} else if adj.Amount.IsPositive() {
 			receivers = append(receivers, adj)
 		}
 	}
 
+	// Initialize gRPC client
+	grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
+	if err != nil {
+		return fmt.Errorf("failed to create gRPC client: %v", err)
+	}
+
 	// Perform transfers from senders to receivers
 	for _, sender := range senders {
-		amountToSend := sender.Amount.Neg() // Convert to positive value
-
-		for i := 0; i < len(receivers) && amountToSend.GT(sdkmath.ZeroInt()); i++ {
+		amountToSend := sender.Amount.Abs()
+		for i := range receivers {
 			receiver := &receivers[i]
 			if receiver.Amount.GT(sdkmath.ZeroInt()) {
 				transferAmount := sdkmath.MinInt(amountToSend, receiver.Amount)
-				err := TransferFunds(sender.Account, receiver.Account.Address, transferAmount, config)
+
+				// Ensure you're using the correct sender account with matching PrivKey
+				err := TransferFunds(grpcClient, sender.Account, receiver.Account.Address, transferAmount, config)
 				if err != nil {
 					return fmt.Errorf("failed to transfer funds from %s to %s: %v",
 						sender.Account.Address, receiver.Account.Address, err)
@@ -322,6 +366,10 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 				// Update the amounts
 				amountToSend = amountToSend.Sub(transferAmount)
 				receiver.Amount = receiver.Amount.Sub(transferAmount)
+
+				if amountToSend.IsZero() {
+					break
+				}
 			}
 		}
 	}
@@ -329,18 +377,22 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 	return nil
 }
 
-func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.Int, config types.Config) error {
+func TransferFunds(grpcClient *client.GRPCClient, sender types.Account, receiverAddress string, amount sdkmath.Int, config types.Config) error {
 	// Get the sender's account info
 	sequence, accNum, err := lib.GetAccountInfo(sender.Address, config)
 	if err != nil {
 		return fmt.Errorf("failed to get account info for sender %s: %v", sender.Address, err)
 	}
 
+	fmt.Printf("TransferFunds - Sender: %s, Account Number: %d, Sequence: %d\n", sender.Address, accNum, sequence)
+
 	nodeURL := config.Nodes.RPC[0]
 	chainID, err := lib.GetChainID(nodeURL)
 	if err != nil {
 		return fmt.Errorf("failed to get chain ID: %v", err)
 	}
+
+	fmt.Printf("TransferFunds - Chain ID: %s\n", chainID)
 
 	// Prepare the transaction parameters
 	txParams := types.TransactionParams{
@@ -352,19 +404,13 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 		PrivKey:     sender.PrivKey,
 		PubKey:      sender.PubKey,
 		AcctAddress: sender.Address,
-		MsgType:     "cosmos-sdk/MsgSend",
+		MsgType:     config.MsgType,
 		MsgParams: types.MsgParams{
 			FromAddress: sender.Address,
 			ToAddress:   receiverAddress,
 			Amount:      amount.Int64(),
 			Denom:       config.Denom,
 		},
-	}
-
-	// Initialize gRPC client
-	grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
-	if err != nil {
-		return fmt.Errorf("failed to create gRPC client: %v", err)
 	}
 
 	// Create a context with timeout

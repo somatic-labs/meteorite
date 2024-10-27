@@ -173,26 +173,27 @@ func GetBalances(accounts []types.Account, config types.Config) (map[string]sdkm
 func GetAccountBalance(address string, config types.Config) (sdkmath.Int, error) {
 	resp, err := HTTPGet(config.Nodes.API + "/cosmos/bank/v1beta1/balances/" + address)
 	if err != nil {
-		return sdkmath.Int{}, err
+		return sdkmath.ZeroInt(), err
 	}
 
 	var balanceRes types.BalanceResult
 	err = json.Unmarshal(resp, &balanceRes)
 	if err != nil {
-		return sdkmath.Int{}, err
+		return sdkmath.ZeroInt(), err
 	}
 
 	for _, coin := range balanceRes.Balances {
 		if coin.Denom == config.Denom {
 			amount, ok := sdkmath.NewIntFromString(coin.Amount)
 			if !ok {
-				return sdkmath.Int{}, errors.New("invalid coin amount")
+				return sdkmath.ZeroInt(), errors.New("invalid coin amount")
 			}
 			return amount, nil
 		}
 	}
 
-	return sdkmath.Int{}, errors.New("balance not found for denom")
+	// If no balance found for the denom, return zero balance
+	return sdkmath.ZeroInt(), nil
 }
 
 func CheckBalancesWithinThreshold(balances map[string]sdkmath.Int, threshold float64) bool {

@@ -11,12 +11,6 @@ import (
 )
 
 func GetPrivKey(config types.Config, mnemonic []byte, position uint32) (cryptotypes.PrivKey, cryptotypes.PubKey, string) {
-	sdkConfig := sdk.GetConfig()
-	sdkConfig.SetBech32PrefixForAccount(config.Prefix, config.Prefix+"pub")
-	sdkConfig.SetBech32PrefixForValidator(config.Prefix+"valoper", config.Prefix+"valoperpub")
-	sdkConfig.SetBech32PrefixForConsensusNode(config.Prefix+"valcons", config.Prefix+"valconspub")
-	sdkConfig.Seal()
-
 	algo := hd.Secp256k1
 
 	hdPath := fmt.Sprintf("m/44'/%d'/0'/0/%d", config.Slip44, position)

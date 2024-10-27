@@ -46,5 +46,5 @@ precision = 3
 
 [nodes]
 rpc = ["http://127.0.0.1:26657"]
-api = "https://api.canary.mantrachain.dev:443"
+api = "http://localhost:1317"
 grpc = "localhost:9090"
