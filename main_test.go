@@ -5,18 +5,21 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
-	sdkmath "cosmossdk.io/math"
-	"github.com/cosmos/cosmos-sdk/crypto/hd"
-	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
-	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/go-bip39"
 	"github.com/cosmos/ibc-go/modules/apps/callbacks/testing/simapp/params"
 	"github.com/somatic-labs/meteorite/broadcast"
 	"github.com/somatic-labs/meteorite/lib"
 	"github.com/somatic-labs/meteorite/types"
+
+	sdkmath "cosmossdk.io/math"
+
+	"github.com/cosmos/cosmos-sdk/crypto/hd"
+	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 )
 
 func TestExtractExpectedSequence(t *testing.T) {
@@ -141,6 +144,74 @@ func TestTransferFunds(t *testing.T) {
 	}
 }
 
+func TestAdjustBalancesWithSeedPhrase(t *testing.T) {
+	// Create a temporary seed phrase file
+	mnemonic := []byte("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about")
+	tmpfile, err := os.CreateTemp("", "seedphrase")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	if _, err := tmpfile.Write(mnemonic); err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	if err := tmpfile.Close(); err != nil {
+		t.Fatalf("Failed to close temp file: %v", err)
+	}
+
+	// Set up test config
+	config := types.Config{
+		Chain:  "test-chain",
+		Prefix: "cosmos",
+		Denom:  "uatom",
+		Slip44: 118,
+		Nodes: types.NodesConfig{
+			RPC: []string{"http://localhost:26657"},
+			API: "http://localhost:1317",
+		},
+	}
+
+	// Create test accounts from seed phrase
+	var accounts []types.Account
+	for i := 0; i < 3; i++ { // Create 3 test accounts
+		position := uint32(i)
+		privKey, pubKey, acctAddress := lib.GetPrivKey(config, mnemonic, position)
+		accounts = append(accounts, types.Account{
+			PrivKey:  privKey,
+			PubKey:   pubKey,
+			Address:  acctAddress,
+			Position: position,
+		})
+	}
+
+	// Set up mock balances where only the 0th position is funded
+	balances := map[string]sdkmath.Int{
+		accounts[0].Address: sdkmath.NewInt(1000000),
+		accounts[1].Address: sdkmath.ZeroInt(),
+		accounts[2].Address: sdkmath.ZeroInt(),
+	}
+
+	// Create a test server to mock the API responses
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Mock successful transaction response
+		fmt.Fprintln(w, `{"height":"1","txhash":"hash","code":0}`)
+	}))
+	defer ts.Close()
+	config.Nodes.API = ts.URL
+	config.Nodes.RPC = []string{ts.URL}
+
+	// Run adjustBalances
+	err = adjustBalances(accounts, balances, config)
+	if err != nil {
+		t.Errorf("adjustBalances() error = %v", err)
+	}
+
+	// Verify that balances were attempted to be adjusted
+	// Note: In a real scenario, you'd want to verify the actual balance changes,
+	// but since we're using a mock server, we're just verifying the function ran without error
+}
+
 func TestAdjustBalances(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -161,12 +232,12 @@ func TestAdjustBalances(t *testing.T) {
 		{
 			name: "zero total balance",
 			accounts: []types.Account{
-				{Address: "mantra1test1"},
-				{Address: "mantra1test2"},
+				{Address: "cosmos1test1"},
+				{Address: "cosmos1test2"},
 			},
 			balances: map[string]sdkmath.Int{
-				"mantra1test1": sdkmath.ZeroInt(),
-				"mantra1test2": sdkmath.ZeroInt(),
+				"cosmos1test1": sdkmath.ZeroInt(),
+				"cosmos1test2": sdkmath.ZeroInt(),
 			},
 			config: types.Config{
 				Denom: "uom",
@@ -176,12 +247,12 @@ func TestAdjustBalances(t *testing.T) {
 		{
 			name: "uneven balances need adjustment",
 			accounts: []types.Account{
-				{Address: "mantra1test1"},
-				{Address: "mantra1test2"},
+				{Address: "cosmos1test1"},
+				{Address: "cosmos1test2"},
 			},
 			balances: map[string]sdkmath.Int{
-				"mantra1test1": sdkmath.NewInt(1000000),
-				"mantra1test2": sdkmath.NewInt(0),
+				"cosmos1test1": sdkmath.NewInt(1000000),
+				"cosmos1test2": sdkmath.NewInt(0),
 			},
 			config: types.Config{
 				Denom: "uom",
@@ -268,7 +339,7 @@ func TestGetAccountInfo(t *testing.T) {
 	}{
 		{
 			name:    "valid response",
-			address: "mantra1test1",
+			address: "cosmos1test1",
 			mockResp: `{
                 "account": {
                     "sequence": "42",
@@ -281,7 +352,7 @@ func TestGetAccountInfo(t *testing.T) {
 		},
 		{
 			name:    "invalid sequence",
-			address: "mantra1test2",
+			address: "cosmos1test2",
 			mockResp: `{
                 "account": {
                     "sequence": "invalid",

@@ -34,7 +34,7 @@ var httpClient = &http.Client{
 	},
 }
 
-func GetAccountInfo(address string, config types.Config) (seqint uint64, accnum uint64, err error) {
+func GetAccountInfo(address string, config types.Config) (seqint, accnum uint64, err error) {
 	resp, err := HTTPGet(config.Nodes.API + "/cosmos/auth/v1beta1/accounts/" + address)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to get initial sequence: %v", err)

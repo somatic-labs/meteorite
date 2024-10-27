@@ -50,7 +50,7 @@ func Transaction(txBytes []byte, rpcEndpoint string) (*coretypes.ResultBroadcast
 }
 
 // broadcastLoop handles the main transaction broadcasting logic
-func BroadcastLoop(
+func Loop(
 	txParams types.TransactionParams,
 	batchSize int,
 ) (successfulTxns, failedTxns int, responseCodes map[uint32]int, updatedSequence uint64) {

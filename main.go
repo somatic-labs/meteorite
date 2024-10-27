@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -128,10 +126,10 @@ func main() {
 	msgParams := config.MsgParams
 
 	// Initialize gRPC client
-	grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
-	if err != nil {
-		log.Fatalf("Failed to create gRPC client: %v", err)
-	}
+	//	grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
+	//	if err != nil {
+	//		log.Fatalf("Failed to create gRPC client: %v", err)
+	//	}
 
 	var wg sync.WaitGroup
 	for _, account := range accounts {
@@ -160,7 +158,7 @@ func main() {
 			}
 
 			// Broadcast transactions
-			successfulTxns, failedTxns, responseCodes, _ := broadcastLoop(txParams, BatchSize, grpcClient)
+			successfulTxns, failedTxns, responseCodes, _ := broadcast.Loop(txParams, BatchSize)
 
 			fmt.Printf("Account %s: Successful transactions: %d, Failed transactions: %d\n", acct.Address, successfulTxns, failedTxns)
 			fmt.Println("Response code breakdown:")
@@ -174,123 +172,6 @@ func main() {
 	wg.Wait()
 }
 
-// broadcastLoop handles the main transaction broadcasting logic
-func broadcastLoop(
-	txParams types.TransactionParams,
-	batchSize int,
-	grpcClient *client.GRPCClient,
-) (successfulTxns, failedTxns int, responseCodes map[uint32]int, updatedSequence uint64) {
-	successfulTxns = 0
-	failedTxns = 0
-	responseCodes = make(map[uint32]int)
-	sequence := txParams.Sequence
-
-	for i := 0; i < batchSize; i++ {
-		currentSequence := sequence
-
-		fmt.Println("FROM LOOP, currentSequence", currentSequence)
-		fmt.Println("FROM LOOP, accNum", txParams.AccNum)
-		fmt.Println("FROM LOOP, chainID", txParams.ChainID)
-
-		ctx := context.Background()
-		start := time.Now()
-		grpcResp, _, err := broadcast.SendTransactionViaGRPC(
-			ctx,
-			txParams,
-			sequence,
-			grpcClient,
-		)
-		elapsed := time.Since(start)
-
-		fmt.Println("FROM MAIN, err", err)
-		fmt.Println("FROM MAIN, resp", grpcResp.Code)
-
-		if err == nil {
-			fmt.Printf("%s Transaction succeeded, sequence: %d, time: %v\n",
-				time.Now().Format("15:04:05.000"), currentSequence, elapsed)
-			successfulTxns++
-			responseCodes[grpcResp.Code]++
-			sequence++ // Increment sequence for next transaction
-			continue
-		}
-
-		fmt.Printf("%s Error: %v\n", time.Now().Format("15:04:05.000"), err)
-		fmt.Println("FROM MAIN, resp.Code", grpcResp.Code)
-
-		if grpcResp.Code == 32 {
-			// Extract the expected sequence number from the error message
-			expectedSeq, parseErr := extractExpectedSequence(err.Error())
-			if parseErr != nil {
-				fmt.Printf("%s Failed to parse expected sequence: %v\n", time.Now().Format("15:04:05.000"), parseErr)
-				failedTxns++
-				continue
-			}
-
-			sequence = expectedSeq
-			fmt.Printf("%s Set sequence to expected value %d due to mismatch\n",
-				time.Now().Format("15:04:05"), sequence)
-
-			// Re-send the transaction with the correct sequence
-			start = time.Now()
-			grpcResp, respBytes, err := broadcast.SendTransactionViaGRPC(
-				ctx,
-				txParams,
-				sequence,
-				grpcClient,
-			)
-
-			fmt.Println("FROM MAIN, grpcResp", grpcResp)
-			fmt.Println("FROM MAIN, respBytes", respBytes)
-
-			elapsed = time.Since(start)
-
-			if err != nil {
-				fmt.Printf("%s Error after adjusting sequence: %v\n", time.Now().Format("15:04:05.000"), err)
-				failedTxns++
-				continue
-			}
-
-			fmt.Printf("%s Transaction succeeded after adjusting sequence, sequence: %d, time: %v\n",
-				time.Now().Format("15:04:05"), sequence, elapsed)
-			successfulTxns++
-			responseCodes[grpcResp.Code]++
-			sequence++ // Increment sequence for next transaction
-			continue
-		}
-		failedTxns++
-
-	}
-	updatedSequence = sequence
-	return successfulTxns, failedTxns, responseCodes, updatedSequence
-}
-
-// Function to extract the expected sequence number from the error message
-func extractExpectedSequence(errMsg string) (uint64, error) {
-	// Parse the error message to extract the expected sequence number
-	// Example error message:
-	// "account sequence mismatch, expected 42, got 41: incorrect account sequence"
-	index := strings.Index(errMsg, "expected ")
-	if index == -1 {
-		return 0, errors.New("expected sequence not found in error message")
-	}
-
-	start := index + len("expected ")
-	rest := errMsg[start:]
-	parts := strings.SplitN(rest, ",", 2)
-	if len(parts) < 1 {
-		return 0, errors.New("failed to split expected sequence from error message")
-	}
-
-	expectedSeqStr := strings.TrimSpace(parts[0])
-	expectedSeq, err := strconv.ParseUint(expectedSeqStr, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("failed to parse expected sequence number: %v", err)
-	}
-
-	return expectedSeq, nil
-}
-
-// adjustBalances transfers funds between accounts to balance their balances within the threshold
 // adjustBalances transfers funds between accounts to balance their balances within the threshold
 func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, config types.Config) error {
 	if len(accounts) == 0 {
