@@ -17,12 +17,12 @@ import (
 
 	sdkmath "cosmossdk.io/math"
 	"github.com/BurntSushi/toml"
-	"github.com/somatic-labs/meteorite/types"
+	types "github.com/somatic-labs/meteorite/types"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 )
 
-var client = &http.Client{
+var httpClient = &http.Client{
 	Timeout: 1 * time.Second, // Adjusted timeout to 10 seconds
 	Transport: &http.Transport{
 		MaxIdleConns:        100,              // Increased maximum idle connections
@@ -83,7 +83,7 @@ func HTTPGet(url string) ([]byte, error) {
 		return nil, err
 	}
 
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		netErr, ok := err.(net.Error)
 		if ok && netErr.Timeout() {

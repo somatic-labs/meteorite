@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	sdkmath "cosmossdk.io/math"
 	"github.com/BurntSushi/toml"
 	"github.com/somatic-labs/meteorite/broadcast"
 	"github.com/somatic-labs/meteorite/client"
@@ -57,8 +58,26 @@ func main() {
 		log.Fatalf("Failed to get balances: %v", err)
 	}
 
+	fmt.Println("balances", balances)
+
 	if !lib.CheckBalancesWithinThreshold(balances, 0.10) {
-		log.Fatalf("Account balances are not within 10%% of each other")
+		fmt.Println("Account balances are not within 10% of each other. Adjusting balances...")
+
+		// Adjust balances to bring them within threshold
+		err = adjustBalances(accounts, balances, config)
+		if err != nil {
+			log.Fatalf("Failed to adjust balances: %v", err)
+		}
+
+		// Re-fetch balances after adjustment
+		balances, err = lib.GetBalances(accounts, config)
+		if err != nil {
+			log.Fatalf("Failed to get balances after adjustment: %v", err)
+		}
+
+		if !lib.CheckBalancesWithinThreshold(balances, 0.10) {
+			log.Fatalf("Account balances are still not within 10%% of each other after adjustment")
+		}
 	}
 
 	nodeURL := config.Nodes.RPC[0] // Use the first node
@@ -231,4 +250,126 @@ func extractExpectedSequence(errMsg string) (uint64, error) {
 	}
 
 	return expectedSeq, nil
+}
+
+// adjustBalances transfers funds between accounts to balance their balances within the threshold
+// adjustBalances transfers funds between accounts to balance their balances within the threshold
+func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, config types.Config) error {
+	// Calculate the total balance
+	totalBalance := sdkmath.ZeroInt()
+	for _, balance := range balances {
+		totalBalance = totalBalance.Add(balance)
+	}
+	numAccounts := sdkmath.NewInt(int64(len(accounts)))
+	averageBalance := totalBalance.Quo(numAccounts)
+
+	// Create a slice to track balances that need to send or receive funds
+	type balanceAdjustment struct {
+		Account types.Account
+		Amount  sdkmath.Int // Positive if needs to receive, negative if needs to send
+	}
+	var adjustments []balanceAdjustment
+
+	for _, acct := range accounts {
+		currentBalance := balances[acct.Address]
+		difference := averageBalance.Sub(currentBalance)
+
+		// Only consider adjustments exceeding the threshold (10% of average)
+		threshold := averageBalance.MulRaw(10).QuoRaw(100) // threshold = averageBalance * 10 / 100
+		if difference.Abs().GT(threshold) {
+			adjustments = append(adjustments, balanceAdjustment{
+				Account: acct,
+				Amount:  difference,
+			})
+		}
+	}
+
+	// Separate adjustments into senders (negative amounts) and receivers (positive amounts)
+	var senders, receivers []balanceAdjustment
+	for _, adj := range adjustments {
+		if adj.Amount.IsNegative() {
+			senders = append(senders, adj)
+		} else if adj.Amount.IsPositive() {
+			receivers = append(receivers, adj)
+		}
+	}
+
+	// Perform transfers from senders to receivers
+	for _, sender := range senders {
+		amountToSend := sender.Amount.Neg() // Convert to positive value
+
+		for i := 0; i < len(receivers) && amountToSend.GT(sdkmath.ZeroInt()); i++ {
+			receiver := &receivers[i]
+			if receiver.Amount.GT(sdkmath.ZeroInt()) {
+				transferAmount := sdkmath.MinInt(amountToSend, receiver.Amount)
+				err := TransferFunds(sender.Account, receiver.Account.Address, transferAmount, config)
+				if err != nil {
+					return fmt.Errorf("failed to transfer funds from %s to %s: %v",
+						sender.Account.Address, receiver.Account.Address, err)
+				}
+
+				// Update the amounts
+				amountToSend = amountToSend.Sub(transferAmount)
+				receiver.Amount = receiver.Amount.Sub(transferAmount)
+			}
+		}
+	}
+
+	return nil
+}
+
+func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.Int, config types.Config) error {
+	// Get the sender's account info
+	sequence, accNum, err := lib.GetAccountInfo(sender.Address, config)
+	if err != nil {
+		return fmt.Errorf("failed to get account info for sender %s: %v", sender.Address, err)
+	}
+
+	nodeURL := config.Nodes.RPC[0]
+	chainID, err := lib.GetChainID(nodeURL)
+	if err != nil {
+		return fmt.Errorf("failed to get chain ID: %v", err)
+	}
+
+	// Prepare the transaction parameters
+	txParams := types.TransactionParams{
+		Config:      config,
+		NodeURL:     nodeURL,
+		ChainID:     chainID,
+		Sequence:    sequence,
+		AccNum:      accNum,
+		PrivKey:     sender.PrivKey,
+		PubKey:      sender.PubKey,
+		AcctAddress: sender.Address,
+		MsgType:     "cosmos-sdk/MsgSend",
+		MsgParams: types.MsgParams{
+			FromAddress: sender.Address,
+			ToAddress:   receiverAddress,
+			Amount:      amount.Int64(),
+			Denom:       config.Denom,
+		},
+	}
+
+	// Initialize gRPC client
+	grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
+	if err != nil {
+		return fmt.Errorf("failed to create gRPC client: %v", err)
+	}
+
+	// Create a context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Send the transaction
+	grpcResp, _, err := broadcast.SendTransactionViaGRPC(ctx, txParams, sequence, grpcClient)
+	if err != nil {
+		return fmt.Errorf("failed to send transaction: %v", err)
+	}
+
+	if grpcResp.Code != 0 {
+		return fmt.Errorf("transaction failed with code %d: %s", grpcResp.Code, grpcResp.RawLog)
+	}
+
+	fmt.Printf("Transferred %s%s from %s to %s\n", amount.String(), config.Denom, sender.Address, receiverAddress)
+	return nil
 }

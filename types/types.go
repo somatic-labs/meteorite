@@ -141,7 +141,9 @@ type Config struct {
 }
 
 type MsgParams struct {
+	FromAddress  string `toml:"from_address"`
 	Amount       int64  `toml:"amount"`
+	Denom        string `toml:"denom"`
 	Receiver     string `toml:"receiver"`
 	ToAddress    string `toml:"to_address"`
 	WasmFile     string `toml:"wasm_file"`
