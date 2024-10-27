@@ -221,7 +221,7 @@ func CheckBalancesWithinThreshold(balances map[string]sdkmath.Int, threshold flo
 	diff := maxBalance.Sub(minBalance)
 	avg := maxBalance.Add(minBalance).Quo(sdkmath.NewInt(2))
 
-	percentageDiff := diff.ToLegacyDec().Quo(avg.ToLegacyDec()).MustFloat64()
-
-	return percentageDiff <= threshold
+	percentageDiff := diff.ToLegacyDec().Quo(avg.ToLegacyDec())
+	thresholdDec := sdkmath.LegacyNewDec(threshold)
+	return percentageDiff.LTE(thresholdDec)
 }
