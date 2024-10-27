@@ -266,13 +266,25 @@ func extractExpectedSequence(errMsg string) (uint64, error) {
 
 // adjustBalances transfers funds between accounts to balance their balances within the threshold
 func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, config types.Config) error {
+	if len(accounts) == 0 {
+		return errors.New("no accounts provided for balance adjustment")
+	}
+
 	// Calculate the total balance
 	totalBalance := sdkmath.ZeroInt()
 	for _, balance := range balances {
 		totalBalance = totalBalance.Add(balance)
 	}
+
+	if totalBalance.IsZero() {
+		return errors.New("total balance is zero, nothing to adjust")
+	}
+
 	numAccounts := sdkmath.NewInt(int64(len(accounts)))
 	averageBalance := totalBalance.Quo(numAccounts)
+
+	// Define minimum transfer amount to avoid dust transfers
+	minTransfer := sdkmath.NewInt(1000) // Adjust based on your token's decimal places
 
 	// Create a slice to track balances that need to send or receive funds
 	type balanceAdjustment struct {
@@ -285,9 +297,9 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 		currentBalance := balances[acct.Address]
 		difference := averageBalance.Sub(currentBalance)
 
-		// Only consider adjustments exceeding the threshold (10% of average)
+		// Only consider adjustments exceeding the threshold and minimum transfer amount
 		threshold := averageBalance.MulRaw(10).QuoRaw(100) // threshold = averageBalance * 10 / 100
-		if difference.Abs().GT(threshold) {
+		if difference.Abs().GT(threshold) && difference.Abs().GT(minTransfer) {
 			adjustments = append(adjustments, balanceAdjustment{
 				Account: acct,
 				Amount:  difference,
