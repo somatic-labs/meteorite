@@ -137,7 +137,7 @@ type Config struct {
 	Gas            GasConfig   `toml:"gas"`
 	Nodes          NodesConfig `toml:"nodes"`
 	BroadcastMode  string      `toml:"broadcast_mode"`
-	Positions      int         `toml:"positions"`
+	Positions      uint        `toml:"positions"`
 }
 
 type MsgParams struct {
