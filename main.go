@@ -358,7 +358,8 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 	fmt.Println("FROM TRANSFER, txParams msgType", txParams.MsgType)
 	fmt.Println("FROM TRANSFER, txParams msgParams", txParams.MsgParams)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	resp, _, err := broadcast.SendTransactionViaGRPC(ctx, txParams, sequence, grpcClient)
 	if err != nil {
 		return fmt.Errorf("failed to send transaction: %v", err)
