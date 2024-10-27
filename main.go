@@ -44,8 +44,9 @@ func main() {
 	sdkConfig.Seal()
 
 	positions := config.Positions
-	if positions <= 0 {
-		log.Fatalf("Invalid number of positions: %d", positions)
+	const MaxPositions = 100 // Adjust based on requirements
+	if positions <= 0 || positions > MaxPositions {
+		log.Fatalf("Number of positions must be between 1 and %d, got: %d", MaxPositions, positions)
 	}
 	fmt.Println("Positions", positions)
 
