@@ -194,7 +194,7 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 	fmt.Printf("Number of Accounts: %d, Average Balance per account: %s %s\n", numAccounts.Int64(), averageBalance.String(), config.Denom)
 
 	// Define minimum transfer amount to avoid dust transfers
-	minTransfer := sdkmath.NewInt(1000) // Adjust based on your token's decimal places
+	minTransfer := sdkmath.NewInt(1000000) // Adjust based on your token's decimal places
 	fmt.Printf("Minimum Transfer Amount to avoid dust: %s %s\n", minTransfer.String(), config.Denom)
 
 	// Create a slice to track balances that need to send or receive funds
@@ -305,10 +305,10 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.Int, config types.Config) error {
 	// Add nil checks for keys
 	if sender.PrivKey == nil {
-		return fmt.Errorf("sender private key is nil")
+		return errors.New("sender private key is nil")
 	}
 	if sender.PubKey == nil {
-		return fmt.Errorf("sender public key is nil")
+		return errors.New("sender public key is nil")
 	}
 
 	// Get the sender's account info
