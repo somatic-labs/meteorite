@@ -59,6 +59,17 @@ func main() {
 		log.Fatalf("Failed to get balances: %v", err)
 	}
 
+	// Print addresses and balances
+	fmt.Println("Wallets and Balances:")
+	for _, acct := range accounts {
+		balance, err := lib.GetAccountBalance(acct.Address, config)
+		if err != nil {
+			log.Printf("Failed to get balance for %s: %v", acct.Address, err)
+			continue
+		}
+		fmt.Printf("Position %d: Address: %s, Balance: %s %s\n", acct.Position, acct.Address, balance.String(), config.Denom)
+	}
+
 	fmt.Println("balances", balances)
 
 	if !lib.CheckBalancesWithinThreshold(balances, 0.10) {
@@ -170,7 +181,7 @@ func broadcastLoop(
 
 		if err == nil {
 			fmt.Printf("%s Transaction succeeded, sequence: %d, time: %v\n",
-				time.Now().Format("15:04:05"), currentSequence, elapsed)
+				time.Now().Format("15:04:05.000"), currentSequence, elapsed)
 			successfulTxns++
 			responseCodes[grpcResp.Code]++
 			sequence++ // Increment sequence for next transaction
