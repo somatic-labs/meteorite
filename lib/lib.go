@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math/big"
@@ -13,6 +15,7 @@ import (
 	"strconv"
 	"time"
 
+	sdkmath "cosmossdk.io/math"
 	"github.com/BurntSushi/toml"
 	"github.com/somatic-labs/meteorite/types"
 
@@ -29,33 +32,29 @@ var client = &http.Client{
 	},
 }
 
-func GetAccountInfo(address string, config types.Config) (uint64, uint64) {
+func GetAccountInfo(address string, config types.Config) (uint64, uint64, error) {
 	resp, err := HTTPGet(config.Nodes.API + "/cosmos/auth/v1beta1/accounts/" + address)
 	if err != nil {
-		log.Printf("Failed to get initial sequence: %v", err)
-		return 0, 0
+		return 0, 0, fmt.Errorf("failed to get initial sequence: %v", err)
 	}
 
 	var accountRes types.AccountResult
 	err = json.Unmarshal(resp, &accountRes)
 	if err != nil {
-		log.Printf("Failed to unmarshal account result: %v", err)
-		return 0, 0
+		return 0, 0, fmt.Errorf("failed to unmarshal account result: %v", err)
 	}
 
 	seqint, err := strconv.ParseInt(accountRes.Account.Sequence, 10, 64)
 	if err != nil {
-		log.Printf("Failed to convert sequence to int: %v", err)
-		return 0, 0
+		return 0, 0, fmt.Errorf("failed to convert sequence to int: %v", err)
 	}
 
 	accnum, err := strconv.ParseInt(accountRes.Account.AccountNumber, 10, 64)
 	if err != nil {
-		log.Printf("Failed to convert account number to int: %v", err)
-		return 0, 0
+		return 0, 0, fmt.Errorf("failed to convert account number to int: %v", err)
 	}
 
-	return uint64(seqint), uint64(accnum)
+	return uint64(seqint), uint64(accnum), nil
 }
 
 func GetChainID(nodeURL string) (string, error) {
@@ -156,4 +155,71 @@ func GenerateRandomAccount() (sdk.AccAddress, error) {
 	accAddress := sdk.AccAddress(randomBytes)
 
 	return accAddress, nil
+}
+
+func GetBalances(accounts []types.Account, config types.Config) (map[string]sdkmath.Int, error) {
+	balances := make(map[string]sdkmath.Int)
+	for _, account := range accounts {
+		balance, err := GetAccountBalance(account.Address, config)
+		if err != nil {
+			return nil, err
+		}
+		balances[account.Address] = balance
+	}
+	return balances, nil
+}
+
+func GetAccountBalance(address string, config types.Config) (sdkmath.Int, error) {
+	resp, err := HTTPGet(config.Nodes.API + "/cosmos/bank/v1beta1/balances/" + address)
+	if err != nil {
+		return sdkmath.Int{}, err
+	}
+
+	var balanceRes types.BalanceResult
+	err = json.Unmarshal(resp, &balanceRes)
+	if err != nil {
+		return sdkmath.Int{}, err
+	}
+
+	for _, coin := range balanceRes.Balances {
+		if coin.Denom == config.Denom {
+			amount, ok := sdkmath.NewIntFromString(coin.Amount)
+			if !ok {
+				return sdkmath.Int{}, errors.New("invalid coin amount")
+			}
+			return amount, nil
+		}
+	}
+
+	return sdkmath.Int{}, errors.New("balance not found for denom")
+}
+
+func CheckBalancesWithinThreshold(balances map[string]sdkmath.Int, threshold float64) bool {
+	var amounts []sdkmath.Int
+	for _, amount := range balances {
+		amounts = append(amounts, amount)
+	}
+
+	if len(amounts) == 0 {
+		return true
+	}
+
+	maxBalance := amounts[0]
+	minBalance := amounts[0]
+
+	for _, amount := range amounts[1:] {
+		if amount.GT(maxBalance) {
+			maxBalance = amount
+		}
+		if amount.LT(minBalance) {
+			minBalance = amount
+		}
+	}
+
+	diff := maxBalance.Sub(minBalance)
+	avg := maxBalance.Add(minBalance).Quo(sdkmath.NewInt(2))
+
+	percentageDiff := diff.ToLegacyDec().Quo(avg.ToLegacyDec()).MustFloat64()
+
+	return percentageDiff <= threshold
 }

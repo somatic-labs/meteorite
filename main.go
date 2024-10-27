@@ -1,16 +1,19 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/somatic-labs/meteorite/broadcast"
+	"github.com/somatic-labs/meteorite/client"
 	"github.com/somatic-labs/meteorite/lib"
 	"github.com/somatic-labs/meteorite/types"
 )
@@ -30,17 +33,36 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to read seed phrase: %v", err)
 	}
-	privKey, pubKey, acctAddress := lib.GetPrivKey(config, mnemonic)
 
-	nodes := lib.LoadNodes()
-	if len(nodes) == 0 {
-		log.Fatal("No nodes available to send transactions")
+	positions := config.Positions
+	if positions <= 0 {
+		log.Fatalf("Invalid number of positions: %d", positions)
 	}
-	nodeURL := nodes[0] // Use only the first node
 
-	if nodeURL == "" {
-		log.Fatal("Node URL is empty. Please verify the nodes configuration.")
+	var accounts []types.Account
+	for i := 0; i < positions; i++ {
+		position := uint32(i)
+		privKey, pubKey, acctAddress := lib.GetPrivKey(config, mnemonic, position)
+		accounts = append(accounts, types.Account{
+			PrivKey:  privKey,
+			PubKey:   pubKey,
+			Address:  acctAddress,
+			Position: position,
+		})
 	}
+
+	// Get balances and ensure they are within 10% of each other
+	balances, err := lib.GetBalances(accounts, config)
+	if err != nil {
+		log.Fatalf("Failed to get balances: %v", err)
+	}
+
+	if !lib.CheckBalancesWithinThreshold(balances, 0.10) {
+		log.Fatalf("Account balances are not within 10%% of each other")
+	}
+
+	nodeURL := config.Nodes.RPC[0] // Use the first node
+
 	chainID, err := lib.GetChainID(nodeURL)
 	if err != nil {
 		log.Fatalf("Failed to get chain ID: %v", err)
@@ -48,53 +70,58 @@ func main() {
 
 	msgParams := config.MsgParams
 
-	// Get the account info
-	_, accNum := lib.GetAccountInfo(acctAddress, config)
+	// Initialize gRPC client
+	grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
 	if err != nil {
-		log.Fatalf("Failed to get account info: %v", err)
+		log.Fatalf("Failed to create gRPC client: %v", err)
 	}
 
-	sequence := uint64(1) // Start from sequence number 1
+	var wg sync.WaitGroup
+	for _, account := range accounts {
+		wg.Add(1)
+		go func(acct types.Account) {
+			defer wg.Done()
 
-	// Create a TransactionParams struct
-	txParams := types.TransactionParams{
-		Config:      config,
-		NodeURL:     nodeURL,
-		ChainID:     chainID,
-		Sequence:    sequence,
-		AccNum:      accNum,
-		PrivKey:     privKey,
-		PubKey:      pubKey,
-		AcctAddress: acctAddress,
-		MsgType:     config.MsgType,
-		MsgParams:   msgParams,
+			// Get account info
+			sequence, accNum, err := lib.GetAccountInfo(acct.Address, config)
+			if err != nil {
+				log.Printf("Failed to get account info for %s: %v", acct.Address, err)
+				return
+			}
+
+			txParams := types.TransactionParams{
+				Config:      config,
+				NodeURL:     nodeURL,
+				ChainID:     chainID,
+				Sequence:    sequence,
+				AccNum:      accNum,
+				PrivKey:     acct.PrivKey,
+				PubKey:      acct.PubKey,
+				AcctAddress: acct.Address,
+				MsgType:     config.MsgType,
+				MsgParams:   msgParams,
+			}
+
+			// Broadcast transactions
+			successfulTxns, failedTxns, responseCodes, _ := broadcastLoop(txParams, BatchSize, grpcClient)
+
+			fmt.Printf("Account %s: Successful transactions: %d, Failed transactions: %d\n", acct.Address, successfulTxns, failedTxns)
+			fmt.Println("Response code breakdown:")
+			for code, count := range responseCodes {
+				percentage := float64(count) / float64(successfulTxns+failedTxns) * 100
+				fmt.Printf("Code %d: %d (%.2f%%)\n", code, count, percentage)
+			}
+		}(account)
 	}
 
-	//	ctx := context.Background()
-
-	//	_, err := client.NewGRPCClient(config.Nodes.GRPC)
-	//	if err != nil {
-	//		log.Fatalf("Failed to create gRPC client: %v", err)
-	//	}
-
-	// Call the broadcast loop
-	successfulTxns, failedTxns, responseCodes, _ := broadcastLoop(txParams, BatchSize)
-
-	// After the loop
-	fmt.Println("Successful transactions:", successfulTxns)
-	fmt.Println("Failed transactions:", failedTxns)
-	totalTxns := successfulTxns + failedTxns
-	fmt.Println("Response code breakdown:")
-	for code, count := range responseCodes {
-		percentage := float64(count) / float64(totalTxns) * 100
-		fmt.Printf("Code %d: %d (%.2f%%)\n", code, count, percentage)
-	}
+	wg.Wait()
 }
 
 // broadcastLoop handles the main transaction broadcasting logic
 func broadcastLoop(
 	txParams types.TransactionParams,
 	batchSize int,
+	grpcClient *client.GRPCClient,
 ) (successfulTxns, failedTxns int, responseCodes map[uint32]int, updatedSequence uint64) {
 	successfulTxns = 0
 	failedTxns = 0
@@ -108,29 +135,32 @@ func broadcastLoop(
 		fmt.Println("FROM LOOP, accNum", txParams.AccNum)
 		fmt.Println("FROM LOOP, chainID", txParams.ChainID)
 
+		ctx := context.Background()
 		start := time.Now()
-		resp, _, err := broadcast.SendTransactionViaRPC(
+		grpcResp, _, err := broadcast.SendTransactionViaGRPC(
+			ctx,
 			txParams,
-			currentSequence,
+			sequence,
+			grpcClient,
 		)
 		elapsed := time.Since(start)
 
 		fmt.Println("FROM MAIN, err", err)
-		fmt.Println("FROM MAIN, resp", resp.Code)
+		fmt.Println("FROM MAIN, resp", grpcResp.Code)
 
 		if err == nil {
 			fmt.Printf("%s Transaction succeeded, sequence: %d, time: %v\n",
 				time.Now().Format("15:04:05"), currentSequence, elapsed)
 			successfulTxns++
-			responseCodes[resp.Code]++
+			responseCodes[grpcResp.Code]++
 			sequence++ // Increment sequence for next transaction
 			continue
 		}
 
 		fmt.Printf("%s Error: %v\n", time.Now().Format("15:04:05.000"), err)
-		fmt.Println("FROM MAIN, resp.Code", resp.Code)
+		fmt.Println("FROM MAIN, resp.Code", grpcResp.Code)
 
-		if resp.Code == 32 {
+		if grpcResp.Code == 32 {
 			// Extract the expected sequence number from the error message
 			expectedSeq, parseErr := extractExpectedSequence(err.Error())
 			if parseErr != nil {
@@ -145,10 +175,16 @@ func broadcastLoop(
 
 			// Re-send the transaction with the correct sequence
 			start = time.Now()
-			resp, _, err = broadcast.SendTransactionViaRPC(
+			grpcResp, respBytes, err := broadcast.SendTransactionViaGRPC(
+				ctx,
 				txParams,
 				sequence,
+				grpcClient,
 			)
+
+			fmt.Println("FROM MAIN, grpcResp", grpcResp)
+			fmt.Println("FROM MAIN, respBytes", respBytes)
+
 			elapsed = time.Since(start)
 
 			if err != nil {
@@ -160,7 +196,7 @@ func broadcastLoop(
 			fmt.Printf("%s Transaction succeeded after adjusting sequence, sequence: %d, time: %v\n",
 				time.Now().Format("15:04:05"), sequence, elapsed)
 			successfulTxns++
-			responseCodes[resp.Code]++
+			responseCodes[grpcResp.Code]++
 			sequence++ // Increment sequence for next transaction
 			continue
 		}
