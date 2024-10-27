@@ -15,9 +15,10 @@ import (
 	"strconv"
 	"time"
 
-	sdkmath "cosmossdk.io/math"
 	"github.com/BurntSushi/toml"
 	types "github.com/somatic-labs/meteorite/types"
+
+	sdkmath "cosmossdk.io/math"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 )
