@@ -265,7 +265,6 @@ func extractExpectedSequence(errMsg string) (uint64, error) {
 }
 
 // adjustBalances transfers funds between accounts to balance their balances within the threshold
-// adjustBalances transfers funds between accounts to balance their balances within the threshold
 func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, config types.Config) error {
 	// Calculate the total balance
 	totalBalance := sdkmath.ZeroInt()
