@@ -117,7 +117,6 @@ func main() {
 		}
 		log.Fatalf("Account balances are still not within 10%% of each other after adjustment")
 	}
-	}
 
 	nodeURL := config.Nodes.RPC[0] // Use the first node
 
@@ -423,6 +422,14 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 }
 
 func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.Int, config types.Config) error {
+	// Add nil checks for keys
+	if sender.PrivKey == nil {
+		return fmt.Errorf("sender private key is nil")
+	}
+	if sender.PubKey == nil {
+		return fmt.Errorf("sender public key is nil")
+	}
+
 	// Get the sender's account info
 	sequence, accNum, err := lib.GetAccountInfo(sender.Address, config)
 	if err != nil {

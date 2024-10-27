@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -33,7 +34,7 @@ var httpClient = &http.Client{
 	},
 }
 
-func GetAccountInfo(address string, config types.Config) (uint64, uint64, error) {
+func GetAccountInfo(address string, config types.Config) (seqint uint64, accnum uint64, err error) {
 	resp, err := HTTPGet(config.Nodes.API + "/cosmos/auth/v1beta1/accounts/" + address)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to get initial sequence: %v", err)
@@ -45,12 +46,12 @@ func GetAccountInfo(address string, config types.Config) (uint64, uint64, error)
 		return 0, 0, fmt.Errorf("failed to unmarshal account result: %v", err)
 	}
 
-	seqint, err := strconv.ParseInt(accountRes.Account.Sequence, 10, 64)
+	seqint, err = strconv.ParseUint(accountRes.Account.Sequence, 10, 64)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to convert sequence to int: %v", err)
 	}
 
-	accnum, err := strconv.ParseInt(accountRes.Account.AccountNumber, 10, 64)
+	accnum, err = strconv.ParseUint(accountRes.Account.AccountNumber, 10, 64)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to convert account number to int: %v", err)
 	}
@@ -224,4 +225,30 @@ func CheckBalancesWithinThreshold(balances map[string]sdkmath.Int, threshold flo
 	percentageDiff := diff.ToLegacyDec().Quo(avg.ToLegacyDec())
 	thresholdDec := sdkmath.LegacyNewDec(int64(threshold))
 	return percentageDiff.LTE(thresholdDec)
+}
+
+// Function to extract the expected sequence number from the error message
+func ExtractExpectedSequence(errMsg string) (uint64, error) {
+	// Parse the error message to extract the expected sequence number
+	// Example error message:
+	// "account sequence mismatch, expected 42, got 41: incorrect account sequence"
+	index := strings.Index(errMsg, "expected ")
+	if index == -1 {
+		return 0, errors.New("expected sequence not found in error message")
+	}
+
+	start := index + len("expected ")
+	rest := errMsg[start:]
+	parts := strings.SplitN(rest, ",", 2)
+	if len(parts) < 1 {
+		return 0, errors.New("failed to split expected sequence from error message")
+	}
+
+	expectedSeqStr := strings.TrimSpace(parts[0])
+	expectedSeq, err := strconv.ParseUint(expectedSeqStr, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse expected sequence number: %v", err)
+	}
+
+	return expectedSeq, nil
 }

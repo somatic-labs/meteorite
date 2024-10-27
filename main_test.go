@@ -9,6 +9,10 @@ import (
 	"testing"
 
 	sdkmath "cosmossdk.io/math"
+	"github.com/cosmos/cosmos-sdk/crypto/hd"
+	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
+	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/cosmos/go-bip39"
 	"github.com/cosmos/ibc-go/modules/apps/callbacks/testing/simapp/params"
 	"github.com/somatic-labs/meteorite/broadcast"
 	"github.com/somatic-labs/meteorite/lib"
@@ -56,7 +60,7 @@ func TestExtractExpectedSequence(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := extractExpectedSequence(tt.errMsg)
+			got, err := lib.ExtractExpectedSequence(tt.errMsg)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("extractExpectedSequence() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -69,6 +73,28 @@ func TestExtractExpectedSequence(t *testing.T) {
 }
 
 func TestTransferFunds(t *testing.T) {
+	// Generate a random mnemonic
+	entropy, err := bip39.NewEntropy(256)
+	if err != nil {
+		t.Fatalf("Failed to generate entropy: %v", err)
+	}
+	mnemonic, err := bip39.NewMnemonic(entropy)
+	if err != nil {
+		t.Fatalf("Failed to generate mnemonic: %v", err)
+	}
+
+	// Create key from mnemonic
+	seed := bip39.NewSeed(mnemonic, "")
+	master, ch := hd.ComputeMastersFromSeed(seed)
+	path := hd.NewFundraiserParams(0, sdk.CoinType, 0).String()
+	privKey, err := hd.DerivePrivateKeyForPath(master, ch, path)
+	if err != nil {
+		t.Fatalf("Failed to derive private key: %v", err)
+	}
+
+	secp256k1PrivKey := &secp256k1.PrivKey{Key: privKey}
+	pubKey := secp256k1PrivKey.PubKey()
+
 	tests := []struct {
 		name          string
 		sender        types.Account
@@ -80,8 +106,8 @@ func TestTransferFunds(t *testing.T) {
 		{
 			name: "signature verification failure",
 			sender: types.Account{
-				PrivKey:  nil, // Mock this with a real private key
-				PubKey:   nil, // Mock this with corresponding public key
+				PrivKey:  secp256k1PrivKey,
+				PubKey:   pubKey,
 				Address:  "mantra1uqrar205hjv4s8832kwj8e6xhwvk4x0eqml043",
 				Position: 0,
 			},
