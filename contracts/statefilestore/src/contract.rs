@@ -42,7 +42,9 @@ pub fn execute_store_file(deps: DepsMut, data: Binary) -> StdResult<Response> {
     }
 
     // Compress the data
-    let compressed_data = encode_all(&data, 3)?; // Compression level 3 (balance between speed and compression ratio)
+    let compressed_data = encode_all(data.as_slice(), 3).map_err(|err| {
+        cosmwasm_std::StdError::generic_err(format!("Compression error: {}", err))
+    })?; // Compression level 3
 
     // Compute SHA256 hash of the compressed data
     let mut hasher = Sha256::new();
@@ -61,7 +63,8 @@ pub fn execute_store_file(deps: DepsMut, data: Binary) -> StdResult<Response> {
     let cid_string = format!("b{}", cid_base32.to_lowercase());
 
     // Store compressed file data in storage, keyed by SHA256 hash
-    FILES.save(deps.storage, &sha256_hex, &compressed_data)?;
+    // Convert compressed_data to Binary and save it
+    FILES.save(deps.storage, &sha256_hex, &compressed_data.clone().into())?;
 
     let res = Response::new()
         .add_attribute("method", "execute_store_file")
