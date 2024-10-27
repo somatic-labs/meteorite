@@ -426,17 +426,18 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 		return fmt.Errorf("failed to get account info for sender %s: %v", sender.Address, err)
 	}
 
-	fmt.Printf("TransferFunds - Sender: %s, Account Number: %d, Sequence: %d\n", sender.Address, accNum, sequence)
-
 	nodeURL := config.Nodes.RPC[0]
 	chainID, err := lib.GetChainID(nodeURL)
 	if err != nil {
 		return fmt.Errorf("failed to get chain ID: %v", err)
 	}
 
-	fmt.Printf("TransferFunds - Chain ID: %s\n", chainID)
+	// Initialize gRPC client
+	grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
+	if err != nil {
+		return fmt.Errorf("failed to create gRPC client: %v", err)
+	}
 
-	// Prepare the transaction parameters
 	txParams := types.TransactionParams{
 		Config:      config,
 		NodeURL:     nodeURL,
@@ -455,19 +456,26 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 		},
 	}
 
-	fmt.Println("TransferFunds - txParams", txParams)
-	fmt.Println("TransferFunds - msgParams", txParams.MsgParams)
+	fmt.Println("FROM TRANSFER, txParams config", txParams.Config)
+	fmt.Println("FROM TRANSFER, txParams nodeURL", txParams.NodeURL)
+	fmt.Println("FROM TRANSFER, txParams chainID", txParams.ChainID)
+	fmt.Println("FROM TRANSFER, txParams sequence", txParams.Sequence)
+	fmt.Println("FROM TRANSFER, txParams privKey", txParams.PrivKey.String())
+	fmt.Println("FROM TRANSFER, txParams pubKey", txParams.PubKey.String())
+	fmt.Println("FROM TRANSFER, txParams acctAddress", txParams.AcctAddress)
+	fmt.Println("FROM TRANSFER, txParams accNum", txParams.AccNum)
+	fmt.Println("FROM TRANSFER, txParams msgType", txParams.MsgType)
+	fmt.Println("FROM TRANSFER, txParams msgParams", txParams.MsgParams)
 
-	// Send the transaction via RPC
-	resp, _, err := broadcast.SendTransactionViaRPC(txParams, sequence)
+	ctx := context.Background()
+	resp, _, err := broadcast.SendTransactionViaGRPC(ctx, txParams, sequence, grpcClient)
 	if err != nil {
 		return fmt.Errorf("failed to send transaction: %v", err)
 	}
 
 	if resp.Code != 0 {
-		return fmt.Errorf("transaction failed with code %d: %s", resp.Code, resp.Log)
+		return fmt.Errorf("transaction failed with code %d: %s", resp.Code, resp.RawLog)
 	}
 
-	fmt.Printf("Transferred %s%s from %s to %s\n", amount.String(), config.Denom, sender.Address, receiverAddress)
 	return nil
 }
