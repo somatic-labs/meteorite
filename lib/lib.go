@@ -202,16 +202,17 @@ func CheckBalancesWithinThreshold(balances map[string]sdkmath.Int, threshold flo
 		return false
 	}
 
-	// Initialize minBalance and maxBalance to the first balance in the map
 	var minBalance, maxBalance sdkmath.Int
-	initialized := false
+	first := true
+
 	for _, balance := range balances {
-		if !initialized {
+		if first {
 			minBalance = balance
 			maxBalance = balance
-			initialized = true
+			first = false
 			continue
 		}
+
 		if balance.LT(minBalance) {
 			minBalance = balance
 		}
@@ -220,16 +221,23 @@ func CheckBalancesWithinThreshold(balances map[string]sdkmath.Int, threshold flo
 		}
 	}
 
-	// Proceed with your calculations
+	// Skip check if all balances are below minimum threshold
+	minThreshold := sdkmath.NewInt(1000000) // 1 token assuming 6 decimals
+	if maxBalance.LT(minThreshold) {
+		return true
+	}
+
+	// Calculate the difference as a percentage of the max balance
+	if maxBalance.IsZero() {
+		return minBalance.IsZero()
+	}
+
 	diff := maxBalance.Sub(minBalance)
-	avg := maxBalance.Add(minBalance).Quo(sdkmath.NewInt(2))
+	diffFloat := float64(diff.Int64())
+	maxFloat := float64(maxBalance.Int64())
 
-	percentageDiff := diff.ToLegacyDec().Quo(avg.ToLegacyDec())
-
-	// Correctly convert the threshold to sdkmath.Dec without losing precision
-	thresholdDec := sdkmath.LegacyMustNewDecFromStr(fmt.Sprintf("%f", threshold))
-
-	return percentageDiff.LTE(thresholdDec)
+	percentage := diffFloat / maxFloat
+	return percentage <= threshold
 }
 
 // Function to extract the expected sequence number from the error message

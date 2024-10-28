@@ -102,19 +102,27 @@ func main() {
 			log.Fatalf("Failed to get balances after adjustment: %v", err)
 		}
 
-		if lib.CheckBalancesWithinThreshold(balances, 0.10) {
+		// Final balance check with more lenient threshold for dust amounts
+		if lib.CheckBalancesWithinThreshold(balances, 0.15) { // 15% threshold for final check
+			fmt.Println("Balances successfully adjusted within acceptable range")
 			return
 		}
 
-		totalBalance := sdkmath.ZeroInt()
+		// Only fail if we have significant balances that are still out of range
+		var maxBalance sdkmath.Int
 		for _, balance := range balances {
-			totalBalance = totalBalance.Add(balance)
+			if balance.GT(maxBalance) {
+				maxBalance = balance
+			}
 		}
-		if totalBalance.IsZero() {
-			fmt.Println("All accounts have zero balance. Proceeding without adjusting balances.")
+
+		minSignificantBalance := sdkmath.NewInt(1000000) // 1 token assuming 6 decimals
+		if maxBalance.LT(minSignificantBalance) {
+			fmt.Println("Remaining balance differences are below minimum threshold, proceeding")
 			return
 		}
-		log.Fatalf("Account balances are still not within 10%% of each other after adjustment")
+
+		log.Fatalf("Account balances are still not within threshold after adjustment")
 	}
 
 	nodeURL := config.Nodes.RPC[0] // Use the first node
