@@ -327,7 +327,8 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 		},
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	maxRetries := 3
 	for attempt := 0; attempt < maxRetries; attempt++ {
