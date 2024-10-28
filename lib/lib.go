@@ -245,6 +245,10 @@ func ExtractExpectedSequence(errMsg string) (uint64, error) {
 	// Parse the error message to extract the expected sequence number
 	// Example error message:
 	// "account sequence mismatch, expected 42, got 41: incorrect account sequence"
+	if !strings.Contains(errMsg, "account sequence mismatch") {
+		return 0, fmt.Errorf("unexpected error message format: %s", errMsg)
+	}
+
 	index := strings.Index(errMsg, "expected ")
 	if index == -1 {
 		return 0, errors.New("expected sequence not found in error message")
