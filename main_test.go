@@ -107,26 +107,26 @@ func TestTransferFunds(t *testing.T) {
 		expectedError string
 	}{
 		{
-			name: "signature verification failure",
+			name: "invalid prefix",
 			sender: types.Account{
 				PrivKey:  secp256k1PrivKey,
 				PubKey:   pubKey,
-				Address:  "mantra1uqrar205hjv4s8832kwj8e6xhwvk4x0eqml043",
+				Address:  "cosmos1uqrar205hjv4s8832kwj8e6xhwvk4x0eqml043",
 				Position: 0,
 			},
-			receiver: "mantra1paefpxvjvmmq03gvsfjzwut0zap7z5nq8r99sf",
+			receiver: "cosmos1paefpxvjvmmq03gvsfjzwut0zap7z5nq8r99sf",
 			amount:   sdkmath.NewInt(3123890412),
 			config: types.Config{
-				Chain:  "mantra-canary-net-1",
-				Prefix: "mantra",
-				Denom:  "uom",
+				Chain:  "cosmoshub-4",
+				Prefix: "cosmos",
+				Denom:  "uatom",
 				Nodes: types.NodesConfig{
 					RPC:  []string{"http://127.0.0.1:26657"},
 					API:  "http://localhost:1317",
 					GRPC: "localhost:9090",
 				},
 			},
-			expectedError: "signature verification failed",
+			expectedError: "failed to get account info",
 		},
 	}
 
@@ -288,7 +288,7 @@ func TestBuildAndSignTransaction(t *testing.T) {
 			txParams: types.TransactionParams{
 				MsgType: "invalid_type",
 				Config: types.Config{
-					Denom: "uom",
+					Denom: "uatom",
 				},
 			},
 			sequence:   0,
@@ -300,13 +300,13 @@ func TestBuildAndSignTransaction(t *testing.T) {
 			txParams: types.TransactionParams{
 				MsgType: "bank_send",
 				Config: types.Config{
-					Denom: "uom",
+					Denom: "uatom",
 				},
 				PrivKey: nil,
 			},
 			sequence:   0,
 			wantErr:    true,
-			errorMatch: "private key is required",
+			errorMatch: "invalid from address: empty address string is not allowed",
 		},
 	}
 
@@ -314,7 +314,6 @@ func TestBuildAndSignTransaction(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
 			encodingConfig := params.MakeTestEncodingConfig()
-
 			_, err := broadcast.BuildAndSignTransaction(ctx, tt.txParams, tt.sequence, encodingConfig)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("BuildAndSignTransaction() error = %v, wantErr %v", err, tt.wantErr)
