@@ -116,7 +116,6 @@ func main() {
 		}
 		log.Fatalf("Account balances are still not within 10%% of each other after adjustment")
 	}
-	}
 
 	nodeURL := config.Nodes.RPC[0] // Use the first node
 
