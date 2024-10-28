@@ -14,7 +14,7 @@ rand_max = 30000
 revision_number = 4
 timeout_height = 21720608
 slip44 = 118
-positions = 10                                          # Number of positions to use from the seed phrase
+positions = 50                                         # Number of positions to use from the seed phrase
 
 broadcast_mode = "grpc" # or "rpc"
 

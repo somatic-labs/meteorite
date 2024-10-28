@@ -1,14 +1,10 @@
 package broadcast
 
 import (
-	"context"
 	"fmt"
-	"log"
 	"time"
 
-	cometrpc "github.com/cometbft/cometbft/rpc/client/http"
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
-	tmtypes "github.com/cometbft/cometbft/types"
 	transfertypes "github.com/cosmos/ibc-go/v8/modules/apps/transfer/types"
 	"github.com/somatic-labs/meteorite/lib"
 	types "github.com/somatic-labs/meteorite/types"
@@ -66,33 +62,19 @@ func init() {
 
 // Transaction broadcasts the transaction bytes to the given RPC endpoint.
 func Transaction(txBytes []byte, rpcEndpoint string) (*coretypes.ResultBroadcastTx, error) {
-	cmtCli, err := cometrpc.New(rpcEndpoint, "/websocket")
+	client, err := GetClient(rpcEndpoint)
 	if err != nil {
-		log.Fatal(err)
-	}
-
-	t := tmtypes.Tx(txBytes)
-
-	ctx := context.Background()
-	res, err := cmtCli.BroadcastTxSync(ctx, t)
-	if err != nil {
-		fmt.Println("Error at broadcast:", err)
 		return nil, err
 	}
 
-	if res.Code != 0 {
-		// Return an error containing the code and log message
-		return res, fmt.Errorf("broadcast error code %d: %s", res.Code, res.Log)
-	}
-
-	return res, nil
+	return client.Transaction(txBytes)
 }
 
 // broadcastLoop handles the main transaction broadcasting logic
 func Loop(
 	txParams types.TransactionParams,
 	batchSize int,
-	position int, // Add position parameter
+	position int,
 ) (successfulTxns, failedTxns int, responseCodes map[uint32]int, updatedSequence uint64) {
 	successfulTxns = 0
 	failedTxns = 0
@@ -118,57 +100,62 @@ func Loop(
 		)
 		metrics.Complete = time.Now()
 
-		if err == nil {
-			metrics.LogTiming(currentSequence, true, nil)
-			successfulTxns++
-			responseCodes[resp.Code]++
-			sequence++
-			continue
-		}
+		// Handle case where resp is nil but there's an error
+		if err != nil {
+			metrics.LogTiming(currentSequence, false, err)
+			failedTxns++
 
-		metrics.LogTiming(currentSequence, false, err)
-
-		if resp.Code == 32 {
-			// Extract the expected sequence number from the error message
-			expectedSeq, parseErr := lib.ExtractExpectedSequence(err.Error())
-			if parseErr != nil {
-				fmt.Printf("[POS-%d] Failed to parse expected sequence: %v\n",
-					position, parseErr)
-				failedTxns++
+			// Skip sequence number handling if resp is nil
+			if resp == nil {
 				continue
 			}
 
-			sequence = expectedSeq
-			fmt.Printf("[POS-%d] Set sequence to expected value %d due to mismatch\n",
-				position, sequence)
+			if resp.Code == 32 {
+				// Extract the expected sequence number from the error message
+				expectedSeq, parseErr := lib.ExtractExpectedSequence(err.Error())
+				if parseErr != nil {
+					fmt.Printf("[POS-%d] Failed to parse expected sequence: %v\n",
+						position, parseErr)
+					continue
+				}
 
-			// Re-send the transaction with the correct sequence
-			metrics = &TimingMetrics{
-				PrepStart: time.Now(),
-				Position:  position,
-			}
+				sequence = expectedSeq
+				fmt.Printf("[POS-%d] Set sequence to expected value %d due to mismatch\n",
+					position, sequence)
 
-			metrics.SignStart = time.Now()
-			metrics.BroadStart = time.Now()
-			resp, _, err = SendTransactionViaRPC(
-				txParams,
-				sequence,
-			)
-			metrics.Complete = time.Now()
+				// Re-send the transaction with the correct sequence
+				metrics = &TimingMetrics{
+					PrepStart: time.Now(),
+					Position:  position,
+				}
 
-			if err != nil {
-				metrics.LogTiming(sequence, false, err)
-				failedTxns++
+				metrics.SignStart = time.Now()
+				metrics.BroadStart = time.Now()
+				resp, _, err = SendTransactionViaRPC(
+					txParams,
+					sequence,
+				)
+				metrics.Complete = time.Now()
+
+				if err != nil {
+					metrics.LogTiming(sequence, false, err)
+					failedTxns++
+					continue
+				}
+
+				metrics.LogTiming(sequence, true, nil)
+				successfulTxns++
+				responseCodes[resp.Code]++
+				sequence++
 				continue
 			}
-
-			metrics.LogTiming(sequence, true, nil)
-			successfulTxns++
-			responseCodes[resp.Code]++
-			sequence++
 			continue
 		}
-		failedTxns++
+
+		metrics.LogTiming(currentSequence, true, nil)
+		successfulTxns++
+		responseCodes[resp.Code]++
+		sequence++
 	}
 	updatedSequence = sequence
 	return successfulTxns, failedTxns, responseCodes, updatedSequence
