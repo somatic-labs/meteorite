@@ -70,7 +70,7 @@ func Transaction(txBytes []byte, rpcEndpoint string) (*coretypes.ResultBroadcast
 	return client.Transaction(txBytes)
 }
 
-// broadcastLoop handles the main transaction broadcasting logic
+// Loop handles the main transaction broadcasting logic
 func Loop(
 	txParams types.TransactionParams,
 	batchSize int,
@@ -83,70 +83,27 @@ func Loop(
 
 	for i := 0; i < batchSize; i++ {
 		currentSequence := sequence
-
 		metrics := &TimingMetrics{
 			PrepStart: time.Now(),
 			Position:  position,
 		}
 
-		// Prepare transaction
 		metrics.SignStart = time.Now()
-
-		// Start broadcast
 		metrics.BroadStart = time.Now()
-		resp, _, err := SendTransactionViaRPC(
-			txParams,
-			currentSequence,
-		)
+		resp, _, err := SendTransactionViaRPC(txParams, currentSequence)
 		metrics.Complete = time.Now()
 
-		// Handle case where resp is nil but there's an error
 		if err != nil {
 			metrics.LogTiming(currentSequence, false, err)
 			failedTxns++
 
-			// Skip sequence number handling if resp is nil
-			if resp == nil {
-				continue
-			}
-
-			if resp.Code == 32 {
-				// Extract the expected sequence number from the error message
-				expectedSeq, parseErr := lib.ExtractExpectedSequence(err.Error())
-				if parseErr != nil {
-					fmt.Printf("[POS-%d] Failed to parse expected sequence: %v\n",
-						position, parseErr)
-					continue
+			if resp != nil && resp.Code == 32 {
+				newSeq, success, newResp := handleSequenceMismatch(txParams, position, sequence, err)
+				sequence = newSeq
+				if success {
+					successfulTxns++
+					responseCodes[newResp.Code]++
 				}
-
-				sequence = expectedSeq
-				fmt.Printf("[POS-%d] Set sequence to expected value %d due to mismatch\n",
-					position, sequence)
-
-				// Re-send the transaction with the correct sequence
-				metrics = &TimingMetrics{
-					PrepStart: time.Now(),
-					Position:  position,
-				}
-
-				metrics.SignStart = time.Now()
-				metrics.BroadStart = time.Now()
-				resp, _, err = SendTransactionViaRPC(
-					txParams,
-					sequence,
-				)
-				metrics.Complete = time.Now()
-
-				if err != nil {
-					metrics.LogTiming(sequence, false, err)
-					failedTxns++
-					continue
-				}
-
-				metrics.LogTiming(sequence, true, nil)
-				successfulTxns++
-				responseCodes[resp.Code]++
-				sequence++
 				continue
 			}
 			continue
@@ -157,6 +114,36 @@ func Loop(
 		responseCodes[resp.Code]++
 		sequence++
 	}
+
 	updatedSequence = sequence
 	return successfulTxns, failedTxns, responseCodes, updatedSequence
+}
+
+// handleSequenceMismatch handles the case where a transaction fails due to sequence mismatch
+func handleSequenceMismatch(txParams types.TransactionParams, position int, sequence uint64, err error) (uint64, bool, *coretypes.ResultBroadcastTx) {
+	expectedSeq, parseErr := lib.ExtractExpectedSequence(err.Error())
+	if parseErr != nil {
+		fmt.Printf("[POS-%d] Failed to parse expected sequence: %v\n", position, parseErr)
+		return sequence, false, nil
+	}
+
+	fmt.Printf("[POS-%d] Set sequence to expected value %d due to mismatch\n", position, expectedSeq)
+
+	metrics := &TimingMetrics{
+		PrepStart: time.Now(),
+		Position:  position,
+	}
+
+	metrics.SignStart = time.Now()
+	metrics.BroadStart = time.Now()
+	resp, _, err := SendTransactionViaRPC(txParams, expectedSeq)
+	metrics.Complete = time.Now()
+
+	if err != nil {
+		metrics.LogTiming(expectedSeq, false, err)
+		return expectedSeq, false, nil
+	}
+
+	metrics.LogTiming(expectedSeq, true, nil)
+	return expectedSeq + 1, true, resp
 }

@@ -11,16 +11,16 @@ import (
 	tmtypes "github.com/cometbft/cometbft/types"
 )
 
-type BroadcastClient struct {
+type Client struct {
 	client *cometrpc.HTTP
 }
 
 var (
-	clients    = make(map[string]*BroadcastClient)
+	clients    = make(map[string]*Client)
 	clientsMux sync.RWMutex
 )
 
-func GetClient(rpcEndpoint string) (*BroadcastClient, error) {
+func GetClient(rpcEndpoint string) (*Client, error) {
 	clientsMux.RLock()
 	if client, exists := clients[rpcEndpoint]; exists {
 		clientsMux.RUnlock()
@@ -43,14 +43,14 @@ func GetClient(rpcEndpoint string) (*BroadcastClient, error) {
 		return nil, err
 	}
 
-	client := &BroadcastClient{
+	client := &Client{
 		client: cmtCli,
 	}
 	clients[rpcEndpoint] = client
 	return client, nil
 }
 
-func (b *BroadcastClient) Transaction(txBytes []byte) (*coretypes.ResultBroadcastTx, error) {
+func (b *Client) Transaction(txBytes []byte) (*coretypes.ResultBroadcastTx, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 

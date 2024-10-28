@@ -89,40 +89,9 @@ func main() {
 
 	if !lib.CheckBalancesWithinThreshold(balances, 0.10) {
 		fmt.Println("Account balances are not within 10% of each other. Adjusting balances...")
-
-		// Adjust balances to bring them within threshold
-		err = adjustBalances(accounts, balances, config)
-		if err != nil {
-			log.Fatalf("Failed to adjust balances: %v", err)
+		if err := handleBalanceAdjustment(accounts, balances, config); err != nil {
+			log.Fatalf("Failed to handle balance adjustment: %v", err)
 		}
-
-		// Re-fetch balances after adjustment
-		balances, err = lib.GetBalances(accounts, config)
-		if err != nil {
-			log.Fatalf("Failed to get balances after adjustment: %v", err)
-		}
-
-		// Final balance check with more lenient threshold for dust amounts
-		if lib.CheckBalancesWithinThreshold(balances, 0.15) { // 15% threshold for final check
-			fmt.Println("Balances successfully adjusted within acceptable range")
-			return
-		}
-
-		// Only fail if we have significant balances that are still out of range
-		var maxBalance sdkmath.Int
-		for _, balance := range balances {
-			if balance.GT(maxBalance) {
-				maxBalance = balance
-			}
-		}
-
-		minSignificantBalance := sdkmath.NewInt(1000000) // 1 token assuming 6 decimals
-		if maxBalance.LT(minSignificantBalance) {
-			fmt.Println("Remaining balance differences are below minimum threshold, proceeding")
-			return
-		}
-
-		log.Fatalf("Account balances are still not within threshold after adjustment")
 	}
 
 	nodeURL := config.Nodes.RPC[0] // Use the first node
@@ -408,4 +377,44 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 	}
 
 	return fmt.Errorf("failed to send transaction after %d attempts", maxRetries)
+}
+
+// Add this new function
+func handleBalanceAdjustment(accounts []types.Account, balances map[string]sdkmath.Int, config types.Config) error {
+	if err := adjustBalances(accounts, balances, config); err != nil {
+		return fmt.Errorf("failed to adjust balances: %v", err)
+	}
+
+	balances, err := lib.GetBalances(accounts, config)
+	if err != nil {
+		return fmt.Errorf("failed to get balances after adjustment: %v", err)
+	}
+
+	if !shouldProceedWithBalances(balances) {
+		return errors.New("account balances are still not within threshold after adjustment")
+	}
+
+	return nil
+}
+
+func shouldProceedWithBalances(balances map[string]sdkmath.Int) bool {
+	if lib.CheckBalancesWithinThreshold(balances, 0.15) {
+		fmt.Println("Balances successfully adjusted within acceptable range")
+		return true
+	}
+
+	var maxBalance sdkmath.Int
+	for _, balance := range balances {
+		if balance.GT(maxBalance) {
+			maxBalance = balance
+		}
+	}
+
+	minSignificantBalance := sdkmath.NewInt(1000000)
+	if maxBalance.LT(minSignificantBalance) {
+		fmt.Println("Remaining balance differences are below minimum threshold, proceeding")
+		return true
+	}
+
+	return false
 }
