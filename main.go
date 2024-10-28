@@ -304,13 +304,11 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 }
 
 func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.Int, config types.Config) error {
-	// Add debug logging at the start
 	fmt.Printf("\n=== Starting Transfer ===\n")
 	fmt.Printf("Sender Address: %s\n", sender.Address)
 	fmt.Printf("Receiver Address: %s\n", receiverAddress)
 	fmt.Printf("Amount: %s %s\n", amount.String(), config.Denom)
 
-	// Add nil checks for keys
 	if sender.PrivKey == nil {
 		return errors.New("sender private key is nil")
 	}
@@ -325,12 +323,7 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 	}
 
 	nodeURL := config.Nodes.RPC[0]
-	//	chainID, err := lib.GetChainID(nodeURL)
-	///	if err != nil {
-	//	return fmt.Errorf("failed to get chain ID: %v", err)
-	//	}
 
-	// Initialize gRPC client
 	grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
 	if err != nil {
 		return fmt.Errorf("failed to create gRPC client: %v", err)
@@ -354,27 +347,57 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 		},
 	}
 
-	fmt.Println("FROM TRANSFER, txParams config", txParams.Config)
-	fmt.Println("FROM TRANSFER, txParams nodeURL", txParams.NodeURL)
-	fmt.Println("FROM TRANSFER, txParams chainID", txParams.ChainID)
-	fmt.Println("FROM TRANSFER, txParams sequence", txParams.Sequence)
-	fmt.Println("FROM TRANSFER, txParams privKey", txParams.PrivKey.String())
-	fmt.Println("FROM TRANSFER, txParams pubKey", txParams.PubKey.String())
-	fmt.Println("FROM TRANSFER, txParams acctAddress", txParams.AcctAddress)
-	fmt.Println("FROM TRANSFER, txParams accNum", txParams.AccNum)
-	fmt.Println("FROM TRANSFER, txParams msgType", txParams.MsgType)
-	fmt.Println("FROM TRANSFER, txParams msgParams", txParams.MsgParams)
+	ctx := context.Background()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	resp, _, err := broadcast.SendTransactionViaGRPC(ctx, txParams, sequence, grpcClient)
-	if err != nil {
-		return fmt.Errorf("failed to send transaction: %v", err)
+	maxRetries := 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		fmt.Printf("Attempt %d to send transaction with sequence %d\n", attempt+1, sequence)
+
+		resp, _, err := broadcast.SendTransactionViaGRPC(ctx, txParams, sequence, grpcClient)
+		if err != nil {
+			fmt.Printf("Transaction failed: %v\n", err)
+
+			// Check if the error is a sequence mismatch error (code 32)
+			if resp != nil && resp.Code == 32 {
+				expectedSeq, parseErr := lib.ExtractExpectedSequence(resp.RawLog)
+				if parseErr != nil {
+					return fmt.Errorf("failed to parse expected sequence: %v", parseErr)
+				}
+
+				// Update sequence and retry
+				sequence = expectedSeq
+				txParams.Sequence = sequence
+				fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", sequence)
+				continue
+			}
+
+			return fmt.Errorf("failed to send transaction: %v", err)
+		}
+
+		if resp.Code != 0 {
+			fmt.Printf("Transaction failed with code %d: %s\n", resp.Code, resp.RawLog)
+
+			// Check for sequence mismatch error
+			if resp.Code == 32 {
+				expectedSeq, parseErr := lib.ExtractExpectedSequence(resp.RawLog)
+				if parseErr != nil {
+					return fmt.Errorf("failed to parse expected sequence: %v", parseErr)
+				}
+
+				// Update sequence and retry
+				sequence = expectedSeq
+				txParams.Sequence = sequence
+				fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", sequence)
+				continue
+			}
+
+			return fmt.Errorf("transaction failed with code %d: %s", resp.Code, resp.RawLog)
+		}
+
+		fmt.Printf("-> Successfully transferred %s %s from %s to %s\n",
+			amount.String(), config.Denom, sender.Address, receiverAddress)
+		return nil
 	}
 
-	if resp.Code != 0 {
-		return fmt.Errorf("transaction failed with code %d: %s", resp.Code, resp.RawLog)
-	}
-
-	return nil
+	return fmt.Errorf("failed to send transaction after %d attempts", maxRetries)
 }
