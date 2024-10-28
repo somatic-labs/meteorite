@@ -1,6 +1,6 @@
 # configurations/contract_store_spam/nodes.toml
 
-chain = "mantra"
+chain = "mantra-canary-net-1"
 channel = "channel-1"
 denom = "uom"
 prefix = "mantra"

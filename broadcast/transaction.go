@@ -76,11 +76,14 @@ func BuildAndSignTransaction(
 
 	// Estimate gas limit
 	txSize := len(msg.String())
-	gasLimit := uint64((int64(txSize) * txParams.Config.Bytes) + txParams.Config.BaseGas)
+	gasLimit := uint64(int64(txSize)*txParams.Config.GasPerByte + txParams.Config.BaseGas)
 	txBuilder.SetGasLimit(gasLimit)
 
 	// Calculate fee
-	gasPrice := sdk.NewDecCoinFromDec(txParams.Config.Denom, sdkmath.LegacyNewDecWithPrec(txParams.Config.Gas.Low, txParams.Config.Gas.Precision))
+	gasPrice := sdk.NewDecCoinFromDec(
+		txParams.Config.Denom,
+		sdkmath.LegacyNewDecWithPrec(txParams.Config.Gas.Low, txParams.Config.Gas.Precision),
+	)
 	feeAmount := gasPrice.Amount.MulInt64(int64(gasLimit)).RoundInt()
 	feeCoin := sdk.NewCoin(txParams.Config.Denom, feeAmount)
 	txBuilder.SetFeeAmount(sdk.NewCoins(feeCoin))
@@ -108,8 +111,10 @@ func BuildAndSignTransaction(
 		Sequence:      sequence,
 	}
 
-	// Sign the transaction
-	if _, err := tx.SignWithPrivKey(
+	fmt.Println("signerData", signerData)
+
+	// Sign the transaction with the private key
+	sigV2, err = tx.SignWithPrivKey(
 		ctx,
 		signing.SignMode_SIGN_MODE_DIRECT,
 		signerData,
@@ -117,7 +122,13 @@ func BuildAndSignTransaction(
 		txParams.PrivKey,
 		encodingConfig.TxConfig,
 		sequence,
-	); err != nil {
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Set the signed signature back to the txBuilder
+	if err := txBuilder.SetSignatures(sigV2); err != nil {
 		return nil, err
 	}
 

@@ -303,6 +303,12 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 }
 
 func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.Int, config types.Config) error {
+	// Add debug logging at the start
+	fmt.Printf("\n=== Starting Transfer ===\n")
+	fmt.Printf("Sender Address: %s\n", sender.Address)
+	fmt.Printf("Receiver Address: %s\n", receiverAddress)
+	fmt.Printf("Amount: %s %s\n", amount.String(), config.Denom)
+
 	// Add nil checks for keys
 	if sender.PrivKey == nil {
 		return errors.New("sender private key is nil")
@@ -312,16 +318,16 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 	}
 
 	// Get the sender's account info
-	sequence, accNum, err := lib.GetAccountInfo(sender.Address, config)
+	sequence, accnum, err := lib.GetAccountInfo(sender.Address, config)
 	if err != nil {
 		return fmt.Errorf("failed to get account info for sender %s: %v", sender.Address, err)
 	}
 
 	nodeURL := config.Nodes.RPC[0]
-	chainID, err := lib.GetChainID(nodeURL)
-	if err != nil {
-		return fmt.Errorf("failed to get chain ID: %v", err)
-	}
+	//	chainID, err := lib.GetChainID(nodeURL)
+	///	if err != nil {
+	//	return fmt.Errorf("failed to get chain ID: %v", err)
+	//	}
 
 	// Initialize gRPC client
 	grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
@@ -332,9 +338,9 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 	txParams := types.TransactionParams{
 		Config:      config,
 		NodeURL:     nodeURL,
-		ChainID:     chainID,
+		ChainID:     config.Chain,
 		Sequence:    sequence,
-		AccNum:      accNum,
+		AccNum:      accnum,
 		PrivKey:     sender.PrivKey,
 		PubKey:      sender.PubKey,
 		AcctAddress: sender.Address,
