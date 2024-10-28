@@ -198,32 +198,37 @@ func GetAccountBalance(address string, config types.Config) (sdkmath.Int, error)
 }
 
 func CheckBalancesWithinThreshold(balances map[string]sdkmath.Int, threshold float64) bool {
-	var amounts []sdkmath.Int
-	for _, amount := range balances {
-		amounts = append(amounts, amount)
+	if len(balances) == 0 {
+		return false
 	}
 
-	if len(amounts) == 0 {
-		return true
-	}
-
-	maxBalance := amounts[0]
-	minBalance := amounts[0]
-
-	for _, amount := range amounts[1:] {
-		if amount.GT(maxBalance) {
-			maxBalance = amount
+	// Initialize minBalance and maxBalance to the first balance in the map
+	var minBalance, maxBalance sdkmath.Int
+	initialized := false
+	for _, balance := range balances {
+		if !initialized {
+			minBalance = balance
+			maxBalance = balance
+			initialized = true
+			continue
 		}
-		if amount.LT(minBalance) {
-			minBalance = amount
+		if balance.LT(minBalance) {
+			minBalance = balance
+		}
+		if balance.GT(maxBalance) {
+			maxBalance = balance
 		}
 	}
 
+	// Proceed with your calculations
 	diff := maxBalance.Sub(minBalance)
 	avg := maxBalance.Add(minBalance).Quo(sdkmath.NewInt(2))
 
 	percentageDiff := diff.ToLegacyDec().Quo(avg.ToLegacyDec())
-	thresholdDec := sdkmath.LegacyNewDec(int64(threshold))
+
+	// Correctly convert the threshold to sdkmath.Dec without losing precision
+	thresholdDec := sdkmath.LegacyMustNewDecFromStr(fmt.Sprintf("%f", threshold))
+
 	return percentageDiff.LTE(thresholdDec)
 }
 
