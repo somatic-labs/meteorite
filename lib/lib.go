@@ -194,7 +194,7 @@ func GetAccountBalance(address string, config types.Config) (sdkmath.Int, error)
 	}
 
 	// If no balance found for the denom, return zero balance
-	return sdkmath.ZeroInt(), nil
+	return sdkmath.ZeroInt(), fmt.Errorf("denomination %s not found in account balances", config.Denom)
 }
 
 func CheckBalancesWithinThreshold(balances map[string]sdkmath.Int, threshold float64) bool {
