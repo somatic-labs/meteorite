@@ -54,6 +54,9 @@ func main() {
 	for i := 0; i < int(positions); i++ {
 		position := uint32(i)
 		privKey, pubKey, acctAddress := lib.GetPrivKey(config, mnemonic, position)
+		if privKey == nil || pubKey == nil || len(acctAddress) == 0 {
+			log.Fatalf("Failed to generate keys for position %d", position)
+		}
 		accounts = append(accounts, types.Account{
 			PrivKey:  privKey,
 			PubKey:   pubKey,
