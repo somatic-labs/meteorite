@@ -159,7 +159,7 @@ func main() {
 			}
 
 			// Broadcast transactions
-			successfulTxns, failedTxns, responseCodes, _ := broadcast.Loop(txParams, BatchSize)
+			successfulTxns, failedTxns, responseCodes, _ := broadcast.Loop(txParams, BatchSize, int(acct.Position))
 
 			fmt.Printf("Account %s: Successful transactions: %d, Failed transactions: %d\n", acct.Address, successfulTxns, failedTxns)
 			fmt.Println("Response code breakdown:")

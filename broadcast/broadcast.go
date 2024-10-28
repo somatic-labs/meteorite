@@ -18,6 +18,45 @@ import (
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 )
 
+// Add these at the top of the file
+type TimingMetrics struct {
+	PrepStart  time.Time
+	SignStart  time.Time
+	BroadStart time.Time
+	Complete   time.Time
+	Position   int
+}
+
+func (t *TimingMetrics) LogTiming(sequence uint64, success bool, err error) {
+	prepTime := t.SignStart.Sub(t.PrepStart)
+	signTime := t.BroadStart.Sub(t.SignStart)
+	broadcastTime := t.Complete.Sub(t.BroadStart)
+	totalTime := t.Complete.Sub(t.PrepStart)
+
+	status := "SUCCESS"
+	if !success {
+		status = "FAILED"
+	}
+
+	fmt.Printf("[POS-%d] %s Transaction %s: seq=%d prep=%v sign=%v broadcast=%v total=%v%s\n",
+		t.Position,
+		time.Now().Format("15:04:05.000"),
+		status,
+		sequence,
+		prepTime,
+		signTime,
+		broadcastTime,
+		totalTime,
+		formatError(err))
+}
+
+func formatError(err error) string {
+	if err != nil {
+		return fmt.Sprintf(" error=\"%v\"", err)
+	}
+	return ""
+}
+
 var cdc = codec.NewProtoCodec(codectypes.NewInterfaceRegistry())
 
 func init() {
@@ -53,6 +92,7 @@ func Transaction(txBytes []byte, rpcEndpoint string) (*coretypes.ResultBroadcast
 func Loop(
 	txParams types.TransactionParams,
 	batchSize int,
+	position int, // Add position parameter
 ) (successfulTxns, failedTxns int, responseCodes map[uint32]int, updatedSequence uint64) {
 	successfulTxns = 0
 	failedTxns = 0
@@ -62,68 +102,73 @@ func Loop(
 	for i := 0; i < batchSize; i++ {
 		currentSequence := sequence
 
-		fmt.Println("FROM LOOP, currentSequence", currentSequence)
-		fmt.Println("FROM LOOP, accNum", txParams.AccNum)
-		fmt.Println("FROM LOOP, chainID", txParams.ChainID)
+		metrics := &TimingMetrics{
+			PrepStart: time.Now(),
+			Position:  position,
+		}
 
-		start := time.Now()
+		// Prepare transaction
+		metrics.SignStart = time.Now()
+
+		// Start broadcast
+		metrics.BroadStart = time.Now()
 		resp, _, err := SendTransactionViaRPC(
 			txParams,
 			currentSequence,
 		)
-		elapsed := time.Since(start)
-
-		fmt.Println("FROM MAIN, err", err)
-		fmt.Println("FROM MAIN, resp", resp.Code)
+		metrics.Complete = time.Now()
 
 		if err == nil {
-			fmt.Printf("%s Transaction succeeded, sequence: %d, time: %v\n",
-				time.Now().Format("15:04:05"), currentSequence, elapsed)
+			metrics.LogTiming(currentSequence, true, nil)
 			successfulTxns++
 			responseCodes[resp.Code]++
-			sequence++ // Increment sequence for next transaction
+			sequence++
 			continue
 		}
 
-		fmt.Printf("%s Error: %v\n", time.Now().Format("15:04:05.000"), err)
-		fmt.Println("FROM MAIN, resp.Code", resp.Code)
+		metrics.LogTiming(currentSequence, false, err)
 
 		if resp.Code == 32 {
 			// Extract the expected sequence number from the error message
 			expectedSeq, parseErr := lib.ExtractExpectedSequence(err.Error())
 			if parseErr != nil {
-				fmt.Printf("%s Failed to parse expected sequence: %v\n", time.Now().Format("15:04:05.000"), parseErr)
+				fmt.Printf("[POS-%d] Failed to parse expected sequence: %v\n",
+					position, parseErr)
 				failedTxns++
 				continue
 			}
 
 			sequence = expectedSeq
-			fmt.Printf("%s Set sequence to expected value %d due to mismatch\n",
-				time.Now().Format("15:04:05"), sequence)
+			fmt.Printf("[POS-%d] Set sequence to expected value %d due to mismatch\n",
+				position, sequence)
 
 			// Re-send the transaction with the correct sequence
-			start = time.Now()
+			metrics = &TimingMetrics{
+				PrepStart: time.Now(),
+				Position:  position,
+			}
+
+			metrics.SignStart = time.Now()
+			metrics.BroadStart = time.Now()
 			resp, _, err = SendTransactionViaRPC(
 				txParams,
 				sequence,
 			)
-			elapsed = time.Since(start)
+			metrics.Complete = time.Now()
 
 			if err != nil {
-				fmt.Printf("%s Error after adjusting sequence: %v\n", time.Now().Format("15:04:05.000"), err)
+				metrics.LogTiming(sequence, false, err)
 				failedTxns++
 				continue
 			}
 
-			fmt.Printf("%s Transaction succeeded after adjusting sequence, sequence: %d, time: %v\n",
-				time.Now().Format("15:04:05"), sequence, elapsed)
+			metrics.LogTiming(sequence, true, nil)
 			successfulTxns++
 			responseCodes[resp.Code]++
-			sequence++ // Increment sequence for next transaction
+			sequence++
 			continue
 		}
 		failedTxns++
-
 	}
 	updatedSequence = sequence
 	return successfulTxns, failedTxns, responseCodes, updatedSequence
