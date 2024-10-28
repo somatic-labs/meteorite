@@ -44,8 +44,9 @@ func main() {
 	sdkConfig.Seal()
 
 	positions := config.Positions
-	if positions <= 0 {
-		log.Fatalf("Invalid number of positions: %d", positions)
+	const MaxPositions = 100 // Adjust based on requirements
+	if positions <= 0 || positions > MaxPositions {
+		log.Fatalf("Number of positions must be between 1 and %d, got: %d", MaxPositions, positions)
 	}
 	fmt.Println("Positions", positions)
 
@@ -364,7 +365,8 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 	fmt.Println("FROM TRANSFER, txParams msgType", txParams.MsgType)
 	fmt.Println("FROM TRANSFER, txParams msgParams", txParams.MsgParams)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	resp, _, err := broadcast.SendTransactionViaGRPC(ctx, txParams, sequence, grpcClient)
 	if err != nil {
 		return fmt.Errorf("failed to send transaction: %v", err)

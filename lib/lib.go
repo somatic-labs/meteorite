@@ -56,7 +56,7 @@ func GetAccountInfo(address string, config types.Config) (seqint, accnum uint64,
 		return 0, 0, fmt.Errorf("failed to convert account number to int: %v", err)
 	}
 
-	return uint64(seqint), uint64(accnum), nil
+	return seqint, accnum, nil
 }
 
 func GetChainID(nodeURL string) (string, error) {

@@ -193,7 +193,7 @@ func TestAdjustBalancesWithSeedPhrase(t *testing.T) {
 	}
 
 	// Create a test server to mock the API responses
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Mock successful transaction response
 		fmt.Fprintln(w, `{"height":"1","txhash":"hash","code":0}`)
 	}))
