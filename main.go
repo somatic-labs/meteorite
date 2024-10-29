@@ -8,13 +8,13 @@ import (
 	"sync"
 	"time"
 
+	"cosmossdk.io/log"
 	"github.com/BurntSushi/toml"
 	"github.com/somatic-labs/meteorite/broadcast"
 	"github.com/somatic-labs/meteorite/client"
 	"github.com/somatic-labs/meteorite/lib"
 	"github.com/somatic-labs/meteorite/types"
 
-	"cosmossdk.io/log"
 	sdkmath "cosmossdk.io/math"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
