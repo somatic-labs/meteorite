@@ -124,8 +124,6 @@ func BuildAndSignTransaction(
 		Sequence:      sequence,
 	}
 
-	fmt.Println("signerData", signerData)
-
 	// Sign the transaction with the private key
 	sigV2, err = tx.SignWithPrivKey(
 		ctx,

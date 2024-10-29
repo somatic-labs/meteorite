@@ -143,7 +143,7 @@ func main() {
 			}
 
 			// Broadcast transactions
-			successfulTxns, failedTxns, responseCodes, _ := broadcast.Loop(txParams, BatchSize, int(acct.Position))
+			successfulTxns, failedTxns, responseCodes, _ := broadcast.Loop(txParams, BatchSize, int(acct.Position), config.BroadcastModes[0])
 
 			fmt.Printf("Account %s: Successful transactions: %d, Failed transactions: %d\n", acct.Address, successfulTxns, failedTxns)
 			fmt.Println("Response code breakdown:")
@@ -439,4 +439,16 @@ func shouldProceedWithBalances(balances map[string]sdkmath.Int) bool {
 	}
 
 	return false
+}
+
+func displayStats(stats map[string]types.TransmissionStats) {
+	fmt.Println("Transmission Stats:")
+	for mode, stat := range stats {
+		fmt.Printf("Mode: %s\n", mode)
+		fmt.Printf("  Successful Transactions: %d\n", stat.Successful)
+		fmt.Printf("  Failed Transactions: %d\n", stat.Failed)
+		for code, count := range stat.ResponseCodes {
+			fmt.Printf("  Response Code %d: %d times\n", code, count)
+		}
+	}
 }
