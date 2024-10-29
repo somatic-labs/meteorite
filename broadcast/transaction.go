@@ -3,6 +3,7 @@ package broadcast
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/cosmos/ibc-go/modules/apps/callbacks/testing/simapp/params"
 	"github.com/cosmos/ibc-go/v8/modules/apps/transfer"
@@ -25,18 +26,16 @@ import (
 	wasmd "github.com/CosmWasm/wasmd/x/wasm"
 )
 
-func BuildAndSignTransaction(
-	ctx context.Context,
-	txParams types.TransactionParams,
-	sequence uint64,
-	encodingConfig params.EncodingConfig,
-) ([]byte, error) {
+// Initialize codec and register interfaces once at package level
+func init() {
 	// Register necessary interfaces
 	transferModule := transfer.AppModuleBasic{}
 	ibcModule := ibc.AppModuleBasic{}
 	bankModule := bank.AppModuleBasic{}
 	wasmModule := wasmd.AppModuleBasic{}
 	govModule := gov.AppModuleBasic{}
+
+	encodingConfig := params.MakeTestEncodingConfig()
 
 	ibcModule.RegisterInterfaces(encodingConfig.InterfaceRegistry)
 	transferModule.RegisterInterfaces(encodingConfig.InterfaceRegistry)
@@ -45,8 +44,20 @@ func BuildAndSignTransaction(
 	govModule.RegisterInterfaces(encodingConfig.InterfaceRegistry)
 	std.RegisterInterfaces(encodingConfig.InterfaceRegistry)
 
-	// Create a new TxBuilder
-	txBuilder := encodingConfig.TxConfig.NewTxBuilder()
+	// Store the encoding config globally
+	defaultEncodingConfig = encodingConfig
+}
+
+var defaultEncodingConfig params.EncodingConfig
+
+func BuildAndSignTransaction(
+	ctx context.Context,
+	txParams types.TransactionParams,
+	sequence uint64,
+	_ params.EncodingConfig, // Keep parameter for compatibility but ignore it
+) ([]byte, error) {
+	// Use defaultEncodingConfig instead of passed parameter
+	txBuilder := defaultEncodingConfig.TxConfig.NewTxBuilder()
 
 	var msg sdk.Msg
 	var memo string
@@ -133,7 +144,7 @@ func BuildAndSignTransaction(
 		signerData,
 		txBuilder,
 		txParams.PrivKey,
-		encodingConfig.TxConfig,
+		defaultEncodingConfig.TxConfig,
 		sequence,
 	)
 	if err != nil {
@@ -146,10 +157,62 @@ func BuildAndSignTransaction(
 	}
 
 	// Encode the transaction
-	txBytes, err := encodingConfig.TxConfig.TxEncoder()(txBuilder.GetTx())
+	txBytes, err := defaultEncodingConfig.TxConfig.TxEncoder()(txBuilder.GetTx())
 	if err != nil {
 		return nil, err
 	}
 
 	return txBytes, nil
+}
+
+// BatchTransactions batches multiple transactions together and broadcasts them
+func BatchTransactions(
+	ctx context.Context,
+	txParams types.TransactionParams,
+	batchSize int,
+	sequence uint64,
+	_ params.EncodingConfig,
+) ([][]byte, error) {
+	txBatch := make([][]byte, batchSize)
+	errChan := make(chan error, batchSize)
+	var wg sync.WaitGroup
+
+	// Create a buffered semaphore to limit concurrent goroutines
+	sem := make(chan struct{}, 10)
+
+	for i := 0; i < batchSize; i++ {
+		wg.Add(1)
+		go func(index int, seq uint64) {
+			defer wg.Done()
+
+			// Acquire semaphore
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			// Clone txParams and increment sequence
+			txParamsClone := txParams
+			txParamsClone.Sequence = seq
+
+			txBytes, err := BuildAndSignTransaction(ctx, txParamsClone, seq, defaultEncodingConfig)
+			if err != nil {
+				errChan <- fmt.Errorf("failed to build transaction %d: %w", index, err)
+				return
+			}
+
+			txBatch[index] = txBytes
+		}(i, sequence+uint64(i))
+	}
+
+	// Wait for all goroutines to complete
+	wg.Wait()
+	close(errChan)
+
+	// Check for any errors
+	for err := range errChan {
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return txBatch, nil
 }

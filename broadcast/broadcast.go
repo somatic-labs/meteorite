@@ -1,10 +1,12 @@
 package broadcast
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
+	"github.com/cosmos/ibc-go/modules/apps/callbacks/testing/simapp/params"
 	transfertypes "github.com/cosmos/ibc-go/v8/modules/apps/transfer/types"
 	"github.com/somatic-labs/meteorite/lib"
 	types "github.com/somatic-labs/meteorite/types"
@@ -81,38 +83,62 @@ func Loop(
 	responseCodes = make(map[uint32]int)
 	sequence := txParams.Sequence
 
-	for i := 0; i < batchSize; i++ {
-		currentSequence := sequence
+	// Create batches of transactions
+	encodingConfig := params.MakeTestEncodingConfig()
+	ctx := context.Background()
+
+	txBatch, err := BatchTransactions(ctx, txParams, batchSize, sequence, encodingConfig)
+	if err != nil {
+		fmt.Printf("[POS-%d] Failed to create transaction batch: %v\n", position, err)
+		return 0, batchSize, responseCodes, sequence
+	}
+
+	// Process the batch in chunks to avoid overwhelming the node
+	const chunkSize = 100
+	for i := 0; i < len(txBatch); i += chunkSize {
+		end := i + chunkSize
+		if end > len(txBatch) {
+			end = len(txBatch)
+		}
+
+		chunk := txBatch[i:end]
 		metrics := &TimingMetrics{
 			PrepStart: time.Now(),
 			Position:  position,
 		}
 
-		metrics.SignStart = time.Now()
-		metrics.BroadStart = time.Now()
-		resp, _, err := SendTransactionViaRPC(txParams, currentSequence)
-		metrics.Complete = time.Now()
+		// Broadcast chunk of transactions
+		for _, txBytes := range chunk {
+			metrics.SignStart = time.Now()
+			metrics.BroadStart = time.Now()
 
-		if err != nil {
-			metrics.LogTiming(currentSequence, false, err)
-			failedTxns++
+			resp, err := Transaction(txBytes, txParams.NodeURL)
+			metrics.Complete = time.Now()
 
-			if resp != nil && resp.Code == 32 {
-				newSeq, success, newResp := handleSequenceMismatch(txParams, position, sequence, err)
-				sequence = newSeq
-				if success {
-					successfulTxns++
-					responseCodes[newResp.Code]++
+			if err != nil {
+				metrics.LogTiming(sequence, false, err)
+				failedTxns++
+
+				if resp != nil && resp.Code == 32 {
+					newSeq, success, newResp := handleSequenceMismatch(txParams, position, sequence, err)
+					sequence = newSeq
+					if success {
+						successfulTxns++
+						responseCodes[newResp.Code]++
+					}
+					continue
 				}
 				continue
 			}
-			continue
+
+			metrics.LogTiming(sequence, true, nil)
+			successfulTxns++
+			responseCodes[resp.Code]++
+			sequence++
 		}
 
-		metrics.LogTiming(currentSequence, true, nil)
-		successfulTxns++
-		responseCodes[resp.Code]++
-		sequence++
+		// Small delay between chunks to avoid overwhelming the node
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	updatedSequence = sequence
