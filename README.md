@@ -40,7 +40,14 @@ This will initiate the testing suite with your specified configurations.
 
 ## Important Notes
 
-- **Responsible Use**: meteorite is designed for use on test networks and should be used responsibly. Ensure you have proper authorization before testing on any network you do not own or operate.
+- **Responsible Use**: meteorite is designed for use on mainnets.  The tokens you own grant you the right to make any valid transaction.  Like any user of any chain, meteorite can only make valid transactions.  
+  * Test your favorite mainnet, yourself, and make sure that you can't get Luna'd
+  * Test your favorite mainnet, yourself, and make sure that you can't get Levana'd
+
+Over $70,001,400,000 has been lost to the class of issues named p2p storms.  
+
+If you're investing, test the chain.  It's free if you tweet about using meteorite.
+
 - **Valid Transactions Only**: The tool operates within the bounds of valid transactions explicitly supported by the chains it tests.
 - **Reporting Issues**: For questions about meteorite's capabilities or to report potential security issues, please contact the project maintainers through the appropriate channels listed in this repository.
 

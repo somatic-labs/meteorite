@@ -1,0 +1,23 @@
+// Hardhat .cursorrules
+
+// HTMX and Go best practices
+const htmxGoBestPractices = [
+"follow practices suited for cosmos-sdk v0.50.x",
+"follow practices suited for ibc-go v8.x.x"
+];
+
+// Folder structure
+const folderStructure = `
+  main.go
+lib/
+
+modules/
+go.mod
+go.sum
+`;
+
+// Additional instructions
+const additionalInstructions = `
+1. We are building a high speed test framework for mainnets
+2. We should aim for this application to be precise and performant
+`;

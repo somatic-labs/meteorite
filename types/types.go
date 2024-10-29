@@ -1,5 +1,7 @@
 package types
 
+import cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
+
 type Header struct {
 	Height string `json:"height"`
 }
@@ -135,10 +137,13 @@ type Config struct {
 	Gas            GasConfig   `toml:"gas"`
 	Nodes          NodesConfig `toml:"nodes"`
 	BroadcastMode  string      `toml:"broadcast_mode"`
+	Positions      uint        `toml:"positions"`
 }
 
 type MsgParams struct {
+	FromAddress  string `toml:"from_address"`
 	Amount       int64  `toml:"amount"`
+	Denom        string `toml:"denom"`
 	Receiver     string `toml:"receiver"`
 	ToAddress    string `toml:"to_address"`
 	WasmFile     string `toml:"wasm_file"`
@@ -175,4 +180,29 @@ type NodeStatusResult struct {
 
 type NodeStatusResponse struct {
 	Result NodeStatusResult `json:"result"`
+}
+
+type Account struct {
+	PrivKey  cryptotypes.PrivKey
+	PubKey   cryptotypes.PubKey
+	Address  string
+	Position uint32
+}
+
+// BalanceResult represents the response from the bank balances query.
+type BalanceResult struct {
+	Balances   []Coin     `json:"balances"`
+	Pagination Pagination `json:"pagination"`
+}
+
+// Coin represents a token balance.
+type Coin struct {
+	Denom  string `json:"denom"`
+	Amount string `json:"amount"`
+}
+
+// Pagination holds pagination information.
+type Pagination struct {
+	NextKey string `json:"next_key"`
+	Total   string `json:"total"`
 }
