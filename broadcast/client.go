@@ -85,7 +85,7 @@ func (b *Client) Transaction(txBytes []byte) (*coretypes.ResultBroadcastTx, erro
 		PoolReturnStart: time.Time{},
 		Complete:        time.Time{},
 	}
-	defer metrics.LogTiming()
+	defer metrics.LogTiming("")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -133,16 +133,30 @@ type BroadcastMetrics struct {
 	Complete        time.Time
 }
 
-func (m *BroadcastMetrics) LogTiming() {
+func (m *BroadcastMetrics) LogTiming(txHash string) {
+	timeFormat := "2006-01-02 15:04:05.000"
 	poolGetTime := m.RpcCallStart.Sub(m.PoolGetStart)
 	rpcCallTime := m.PoolReturnStart.Sub(m.RpcCallStart)
 	poolReturnTime := m.Complete.Sub(m.PoolReturnStart)
 	totalTime := m.Complete.Sub(m.Start)
 
-	log.Printf("Broadcast timing - Pool Get: %v, RPC Call: %v, Pool Return: %v, Total: %v",
+	status := "SUCCESS"
+	if txHash == "" {
+		status = "FAILED"
+	}
+
+	txStatus := ""
+	if txHash != "" {
+		txStatus = fmt.Sprintf(" txHash=%s", txHash)
+	}
+
+	log.Printf("[%s] %s: pool_get=%v rpc_call=%v pool_return=%v total=%v%s",
+		m.Start.Format(timeFormat),
+		status,
 		poolGetTime,
 		rpcCallTime,
 		poolReturnTime,
 		totalTime,
+		txStatus,
 	)
 }

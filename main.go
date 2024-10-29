@@ -33,6 +33,8 @@ func main() {
 		logger.Error("Failed to load config", "error", err)
 	}
 
+	config.Logger = logger
+
 	mnemonic, err := os.ReadFile("seedphrase")
 	if err != nil {
 		logger.Error("Failed to read seed phrase", "error", err)
@@ -338,23 +340,18 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 
 		resp, _, err := broadcast.SendTransactionViaGRPC(ctx, txParams, sequence, grpcClient)
 		if err != nil {
-			fmt.Printf("Transaction failed: %v\n", err)
+			config.Logger.Error("Transaction failed",
+				"error", err,
+				"sequence", sequence)
+		} else if resp != nil && resp.Code == 0 {
+			config.Logger.Info("Transaction successful",
+				"txhash", resp.TxHash,
+				"sequence", sequence,
+				"gas_used", resp.GasUsed)
+		}
 
-			// Check if the error is a sequence mismatch error (code 32)
-			if resp != nil && resp.Code == 32 {
-				expectedSeq, parseErr := lib.ExtractExpectedSequence(resp.RawLog)
-				if parseErr != nil {
-					return fmt.Errorf("failed to parse expected sequence: %v", parseErr)
-				}
-
-				// Update sequence and retry
-				sequence = expectedSeq
-				txParams.Sequence = sequence
-				fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", sequence)
-				continue
-			}
-
-			return fmt.Errorf("failed to send transaction: %v", err)
+		if resp.Code == 0 {
+			fmt.Printf("Transaction successful - TxHash: %s\n", resp.TxHash)
 		}
 
 		if resp.Code != 0 {

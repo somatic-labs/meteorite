@@ -1,6 +1,10 @@
 package types
 
-import cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
+import (
+	"cosmossdk.io/log"
+
+	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
+)
 
 type Header struct {
 	Height string `json:"height"`
@@ -117,6 +121,7 @@ type Fee struct {
 }
 
 type Config struct {
+	Logger         log.Logger  `toml:"logger"`
 	Bytes          int64       `toml:"bytes"`
 	Chain          string      `toml:"chain"`
 	Channel        string      `toml:"channel"`

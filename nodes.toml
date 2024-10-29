@@ -5,7 +5,7 @@ channel = "channel-1"
 denom = "uom"
 prefix = "mantra"
 gas_per_byte = 100
-base_gas = 140000
+base_gas = 170000
 memo = "Storing compiled contract with randomized memo"
 ibc_memo_repeat = 10
 rand_min = 15000
@@ -13,7 +13,7 @@ rand_max = 30000
 revision_number = 4
 timeout_height = 21720608
 slip44 = 118
-positions = 50                                          # Number of positions to use from the seed phrase
+positions = 100                                          # Number of positions to use from the seed phrase
 
 broadcast_mode = "grpc" # or "rpc"
 
