@@ -5,8 +5,7 @@ channel = "channel-1"
 denom = "uom"
 prefix = "mantra"
 gas_per_byte = 100
-base_gas = 200000
-ibc_memo = "Contract store spam test"
+base_gas = 140000
 memo = "Storing compiled contract with randomized memo"
 ibc_memo_repeat = 10
 rand_min = 15000
@@ -19,7 +18,7 @@ positions = 50                                          # Number of positions to
 broadcast_mode = "grpc" # or "rpc"
 
 
-msg_type = "store_code"
+msg_type = "bank_send"
 
 [msg_params]
 
@@ -49,3 +48,8 @@ precision = 3
 rpc = ["http://127.0.0.1:26657"]
 api = "http://localhost:1317"
 grpc = "localhost:9090"
+
+
+## IBC Transfer
+# msg_type = "ibc_transfer"
+ibc_memo = "Contract store spam test"
