@@ -162,6 +162,7 @@ type GasConfig struct {
 	Medium    int64 `toml:"medium"`
 	High      int64 `toml:"high"`
 	Precision int64 `toml:"precision"`
+	Limit     int64 `toml:"limit"` // to be set entirely by software
 }
 
 type NodesConfig struct {

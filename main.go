@@ -372,6 +372,22 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 				continue
 			}
 
+			// Assuming you are inside the loop where you handle the transaction response
+			if resp.Code == 41 {
+				fmt.Printf("Transaction failed with code %d: %s\n", resp.Code, resp.RawLog)
+				maxBlockGas := 75000000
+				newGasLimit := maxBlockGas - 1000000
+				txParams.Config.Gas.Limit = int64(newGasLimit)
+				fmt.Printf("Reducing gas limit to %d and retrying...\n", newGasLimit)
+
+				// Retry sending the transaction
+				resp, _, err = broadcast.SendTransactionViaGRPC(ctx, txParams, sequence, grpcClient)
+				if err != nil {
+					return fmt.Errorf("failed to send transaction: %v", err)
+				}
+				continue
+			}
+
 			return fmt.Errorf("transaction failed with code %d: %s", resp.Code, resp.RawLog)
 		}
 

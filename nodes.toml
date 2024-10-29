@@ -14,12 +14,12 @@ rand_max = 30000
 revision_number = 4
 timeout_height = 21720608
 slip44 = 118
-positions = 50                                         # Number of positions to use from the seed phrase
+positions = 50                                          # Number of positions to use from the seed phrase
 
 broadcast_mode = "grpc" # or "rpc"
 
 
-msg_type = "bank_send"
+msg_type = "store_code"
 
 [msg_params]
 
@@ -43,6 +43,7 @@ label = "statefilestore"
 [gas]
 low = 25
 precision = 3
+# limit = 75000000
 
 [nodes]
 rpc = ["http://127.0.0.1:26657"]
