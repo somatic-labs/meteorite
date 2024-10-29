@@ -14,6 +14,12 @@ type Data struct {
 	Txs []string `json:"txs"`
 }
 
+type TransmissionStats struct {
+	Successful    int
+	Failed        int
+	ResponseCodes map[uint32]int
+}
+
 type Block struct {
 	Header Header `json:"header"`
 	Data   Data   `json:"data"`
@@ -141,7 +147,7 @@ type Config struct {
 	MsgParams      MsgParams   `toml:"msg_params"`
 	Gas            GasConfig   `toml:"gas"`
 	Nodes          NodesConfig `toml:"nodes"`
-	BroadcastMode  string      `toml:"broadcast_mode"`
+	BroadcastModes []string    `toml:"broadcast_modes"`
 	Positions      uint        `toml:"positions"`
 }
 
