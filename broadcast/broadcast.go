@@ -133,6 +133,7 @@ func Loop(
 		}
 		metrics.Complete = time.Now()
 
+		var txHash string
 		if err != nil {
 			metrics.LogTiming(currentSequence, "", false, err)
 			failedTxns++
@@ -149,7 +150,14 @@ func Loop(
 			continue
 		}
 
-		metrics.LogTiming(currentSequence, "", true, nil)
+		// Extract txHash based on the mode
+		if mode == "rpc" && resp != nil {
+			txHash = resp.Hash.String()
+		} else if (mode == "grpc" || mode == "api") && sdkResp != nil {
+			txHash = sdkResp.TxHash
+		}
+
+		metrics.LogTiming(currentSequence, txHash, true, nil)
 		successfulTxns++
 		if mode == "rpc" && resp != nil {
 			responseCodes[resp.Code]++

@@ -17,8 +17,8 @@ positions = 100                                         # Number of positions to
 
 broadcast_modes = [
     "grpc",
-    "rpc",
-    "api",
+    #    "rpc",
+    #    "api",
 ] # Use an array to specify multiple modes
 
 msg_type = "bank_send"
