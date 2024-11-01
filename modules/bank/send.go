@@ -15,6 +15,7 @@ import (
 func CreateBankSendMsg(config types.Config, fromAddress string, msgParams types.MsgParams) (sdk.Msg, string, error) {
 	fromAccAddress, err := sdk.AccAddressFromBech32(fromAddress)
 	if err != nil {
+		config.Logger.Error("invalid from address: %w", err)
 		return nil, "", fmt.Errorf("invalid from address: %w", err)
 	}
 
@@ -23,6 +24,7 @@ func CreateBankSendMsg(config types.Config, fromAddress string, msgParams types.
 		//		fmt.Println("invalid to address, in nodes.toml, automatically spamming random new accounts")
 		toAccAddress, err = lib.GenerateRandomAccount()
 		if err != nil {
+			config.Logger.Error("error generating random account: %w", err)
 			return nil, "", fmt.Errorf("error generating random account: %w", err)
 		}
 	}
@@ -33,6 +35,7 @@ func CreateBankSendMsg(config types.Config, fromAddress string, msgParams types.
 
 	memo, err := lib.GenerateRandomStringOfLength(256)
 	if err != nil {
+		config.Logger.Error("error generating random memo: %w", err)
 		return nil, "", fmt.Errorf("error generating random memo: %w", err)
 	}
 

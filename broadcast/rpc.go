@@ -25,6 +25,7 @@ func SendTransactionViaRPC(txParams types.TransactionParams, sequence uint64) (*
 	// Broadcast the transaction via RPC
 	resp, err := Transaction(txBytes, txParams.NodeURL)
 	if err != nil {
+		
 		return resp, string(txBytes), fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
 
