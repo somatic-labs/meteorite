@@ -46,6 +46,11 @@ func GetAccountInfo(address string, config types.Config) (seqint, accnum uint64,
 		return 0, 0, fmt.Errorf("failed to unmarshal account result: %v", err)
 	}
 
+	// Check if account is nil or sequence/account_number is empty
+	if accountRes.Account.Sequence == "" || accountRes.Account.AccountNumber == "" {
+		return 0, 0, fmt.Errorf("account does not exist or has no sequence/account_number")
+	}
+
 	seqint, err = strconv.ParseUint(accountRes.Account.Sequence, 10, 64)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to convert sequence to int: %v", err)
