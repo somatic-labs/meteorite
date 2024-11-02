@@ -9,8 +9,9 @@ import (
 	"net/http"
 	"time"
 
-	"cosmossdk.io/simapp/params"
 	"github.com/somatic-labs/meteorite/types"
+
+	"cosmossdk.io/simapp/params"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/tx"

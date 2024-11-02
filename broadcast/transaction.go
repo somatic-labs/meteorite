@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"cosmossdk.io/simapp/params"
 	"github.com/cosmos/ibc-go/v7/modules/apps/transfer"
 	ibc "github.com/cosmos/ibc-go/v7/modules/core"
 	meteoritebank "github.com/somatic-labs/meteorite/modules/bank"
@@ -13,6 +12,7 @@ import (
 	"github.com/somatic-labs/meteorite/types"
 
 	sdkmath "cosmossdk.io/math"
+	"cosmossdk.io/simapp/params"
 
 	"github.com/cosmos/cosmos-sdk/client/tx"
 	"github.com/cosmos/cosmos-sdk/std"

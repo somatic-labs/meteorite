@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"cosmossdk.io/simapp/params"
 	client "github.com/somatic-labs/meteorite/client"
 	types "github.com/somatic-labs/meteorite/types"
+
+	"cosmossdk.io/simapp/params"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 )

@@ -9,13 +9,13 @@ import (
 	"strings"
 	"testing"
 
-	"cosmossdk.io/simapp/params"
 	"github.com/cosmos/go-bip39"
 	"github.com/somatic-labs/meteorite/broadcast"
 	"github.com/somatic-labs/meteorite/lib"
 	"github.com/somatic-labs/meteorite/types"
 
 	sdkmath "cosmossdk.io/math"
+	"cosmossdk.io/simapp/params"
 
 	"github.com/cosmos/cosmos-sdk/crypto/hd"
 	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
