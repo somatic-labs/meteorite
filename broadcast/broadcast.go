@@ -6,7 +6,7 @@ import (
 	"time"
 
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
-	transfertypes "github.com/cosmos/ibc-go/v8/modules/apps/transfer/types"
+	transfertypes "github.com/cosmos/ibc-go/v7/modules/apps/transfer/types"
 	client "github.com/somatic-labs/meteorite/client"
 	"github.com/somatic-labs/meteorite/lib"
 	types "github.com/somatic-labs/meteorite/types"

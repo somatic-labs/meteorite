@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"cosmossdk.io/simapp/params"
 	"github.com/cosmos/go-bip39"
-	"github.com/cosmos/ibc-go/modules/apps/callbacks/testing/simapp/params"
 	"github.com/somatic-labs/meteorite/broadcast"
 	"github.com/somatic-labs/meteorite/lib"
 	"github.com/somatic-labs/meteorite/types"

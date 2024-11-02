@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cosmos/ibc-go/modules/apps/callbacks/testing/simapp/params"
-	"github.com/cosmos/ibc-go/v8/modules/apps/transfer"
-	ibc "github.com/cosmos/ibc-go/v8/modules/core"
+	"cosmossdk.io/simapp/params"
+	"github.com/cosmos/ibc-go/v7/modules/apps/transfer"
+	ibc "github.com/cosmos/ibc-go/v7/modules/core"
 	meteoritebank "github.com/somatic-labs/meteorite/modules/bank"
 	meteoriteibc "github.com/somatic-labs/meteorite/modules/ibc"
 	wasm "github.com/somatic-labs/meteorite/modules/wasm"
@@ -126,7 +126,6 @@ func BuildAndSignTransaction(
 
 	// Sign the transaction with the private key
 	sigV2, err = tx.SignWithPrivKey(
-		ctx,
 		signing.SignMode_SIGN_MODE_DIRECT,
 		signerData,
 		txBuilder,

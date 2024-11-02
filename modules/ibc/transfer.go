@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	transfertypes "github.com/cosmos/ibc-go/v8/modules/apps/transfer/types"
-	clienttypes "github.com/cosmos/ibc-go/v8/modules/core/02-client/types"
+	transfertypes "github.com/cosmos/ibc-go/v7/modules/apps/transfer/types"
+	clienttypes "github.com/cosmos/ibc-go/v7/modules/core/02-client/types"
 	lib "github.com/somatic-labs/meteorite/lib"
 	types "github.com/somatic-labs/meteorite/types"
 

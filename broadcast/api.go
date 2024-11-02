@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/cosmos/ibc-go/modules/apps/callbacks/testing/simapp/params"
+	"cosmossdk.io/simapp/params"
 	"github.com/somatic-labs/meteorite/types"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"

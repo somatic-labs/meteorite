@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cosmos/ibc-go/modules/apps/callbacks/testing/simapp/params"
+	"cosmossdk.io/simapp/params"
 	client "github.com/somatic-labs/meteorite/client"
 	types "github.com/somatic-labs/meteorite/types"
 

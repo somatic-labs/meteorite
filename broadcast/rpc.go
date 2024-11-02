@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"cosmossdk.io/simapp/params"
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
-	"github.com/cosmos/ibc-go/modules/apps/callbacks/testing/simapp/params"
 	types "github.com/somatic-labs/meteorite/types"
 )
 
@@ -25,7 +25,7 @@ func SendTransactionViaRPC(txParams types.TransactionParams, sequence uint64) (*
 	// Broadcast the transaction via RPC
 	resp, err := Transaction(txBytes, txParams.NodeURL)
 	if err != nil {
-		
+
 		return resp, string(txBytes), fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
 
