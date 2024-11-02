@@ -87,10 +87,18 @@ func Loop(
 	position int,
 	mode string,
 ) (successfulTxns, failedTxns int, responseCodes map[uint32]int, updatedSequence uint64) {
+	// Initialize return values
 	successfulTxns = 0
 	failedTxns = 0
 	responseCodes = make(map[uint32]int)
 	sequence := txParams.Sequence
+
+	// Add nil checks
+	if txParams.Config.Logger == nil {
+		fmt.Printf("Error: Logger is not initialized for position %d\n", position)
+		failedTxns = batchSize
+		return successfulTxns, failedTxns, responseCodes, sequence
+	}
 
 	txParams.Config.Logger.Info("Starting transaction loop",
 		"position", position,

@@ -44,8 +44,8 @@ label = "statefilestore"
 #amount = 1000
 
 [gas]
-low = 1
-precision = 3
+low = 25
+precision = 4
 # limit = 75000000
 
 [nodes]

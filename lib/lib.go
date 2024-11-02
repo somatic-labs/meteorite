@@ -46,9 +46,9 @@ func GetAccountInfo(address string, config types.Config) (seqint, accnum uint64,
 		return 0, 0, fmt.Errorf("failed to unmarshal account result: %v", err)
 	}
 
-	// Check if account is nil or sequence/account_number is empty
+	// If account doesn't exist or has no sequence/account_number, return 0,0
 	if accountRes.Account.Sequence == "" || accountRes.Account.AccountNumber == "" {
-		return 0, 0, errors.New("account does not exist or has no sequence/account_number")
+		return 0, 0, fmt.Errorf("account does not exist or has no sequence/account_number")
 	}
 
 	seqint, err = strconv.ParseUint(accountRes.Account.Sequence, 10, 64)
@@ -188,6 +188,11 @@ func GetAccountBalance(address string, config types.Config) (sdkmath.Int, error)
 		return sdkmath.ZeroInt(), err
 	}
 
+	// If balances array is empty, return zero
+	if len(balanceRes.Balances) == 0 {
+		return sdkmath.ZeroInt(), nil
+	}
+
 	for _, coin := range balanceRes.Balances {
 		if coin.Denom == config.Denom {
 			amount, ok := sdkmath.NewIntFromString(coin.Amount)
@@ -198,8 +203,8 @@ func GetAccountBalance(address string, config types.Config) (sdkmath.Int, error)
 		}
 	}
 
-	// If no balance found for the denom, return zero balance
-	return sdkmath.ZeroInt(), fmt.Errorf("denomination %s not found in account balances", config.Denom)
+	// If denomination not found but balances exist, return zero
+	return sdkmath.ZeroInt(), nil
 }
 
 func CheckBalancesWithinThreshold(balances map[string]sdkmath.Int, threshold float64) bool {

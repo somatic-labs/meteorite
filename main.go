@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"sync"
 	"time"
 
+	"cosmossdk.io/log"
 	"github.com/BurntSushi/toml"
 	"github.com/somatic-labs/meteorite/broadcast"
 	"github.com/somatic-labs/meteorite/client"
@@ -26,14 +26,17 @@ const (
 )
 
 func main() {
+
 	config := types.Config{}
+	config.Logger = log.NewLogger(os.Stdout)
+
 	if _, err := toml.DecodeFile("nodes.toml", &config); err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		config.Logger.Error("Failed to load config: %v", err)
 	}
 
 	mnemonic, err := os.ReadFile("seedphrase")
 	if err != nil {
-		log.Fatalf("Failed to read seed phrase: %v", err)
+		config.Logger.Error("Failed to read seed phrase: %v", err)
 	}
 
 	// Set Bech32 prefixes and seal the configuration once
@@ -46,7 +49,7 @@ func main() {
 	positions := config.Positions
 	const MaxPositions = 100 // Adjust based on requirements
 	if positions <= 0 || positions > MaxPositions {
-		log.Fatalf("Number of positions must be between 1 and %d, got: %d", MaxPositions, positions)
+		config.Logger.Error("Number of positions must be between 1 and %d, got: %d", MaxPositions, positions)
 	}
 	fmt.Println("Positions", positions)
 
@@ -55,7 +58,7 @@ func main() {
 		position := uint32(i)
 		privKey, pubKey, acctAddress := lib.GetPrivKey(config, mnemonic, position)
 		if privKey == nil || pubKey == nil || len(acctAddress) == 0 {
-			log.Fatalf("Failed to generate keys for position %d", position)
+			config.Logger.Error("Failed to generate keys for position %d", position)
 		}
 		accounts = append(accounts, types.Account{
 			PrivKey:  privKey,
@@ -74,7 +77,7 @@ func main() {
 	// Get balances and ensure they are within 10% of each other
 	balances, err := lib.GetBalances(accounts, config)
 	if err != nil {
-		log.Fatalf("Failed to get balances: %v", err)
+		config.Logger.Error("Failed to get balances: %v", err)
 	}
 
 	// Print addresses and balances
@@ -82,7 +85,7 @@ func main() {
 	for _, acct := range accounts {
 		balance, err := lib.GetAccountBalance(acct.Address, config)
 		if err != nil {
-			log.Printf("Failed to get balance for %s: %v", acct.Address, err)
+			config.Logger.Error("Failed to get balance for %s: %v", acct.Address, err)
 			continue
 		}
 		fmt.Printf("Position %d: Address: %s, Balance: %s %s\n", acct.Position, acct.Address, balance.String(), config.Denom)
@@ -93,7 +96,7 @@ func main() {
 	if !lib.CheckBalancesWithinThreshold(balances, 0.10) {
 		fmt.Println("Account balances are not within 10% of each other. Adjusting balances...")
 		if err := handleBalanceAdjustment(accounts, balances, config); err != nil {
-			log.Fatalf("Failed to handle balance adjustment: %v", err)
+			config.Logger.Error("Failed to handle balance adjustment: %v", err)
 		}
 	}
 
@@ -101,7 +104,7 @@ func main() {
 
 	chainID, err := lib.GetChainID(nodeURL)
 	if err != nil {
-		log.Fatalf("Failed to get chain ID: %v", err)
+		config.Logger.Error("Failed to get chain ID: %v", err)
 	}
 
 	msgParams := config.MsgParams
@@ -121,8 +124,9 @@ func main() {
 			// Get account info
 			sequence, accNum, err := lib.GetAccountInfo(acct.Address, config)
 			if err != nil {
-				log.Printf("Failed to get account info for %s: %v", acct.Address, err)
-				return
+				config.Logger.Error("Warning: Failed to get account info for %s: %v. Proceeding with sequence 0", acct.Address, err)
+				sequence = 0
+				accNum = 0
 			}
 
 			txParams := types.TransactionParams{
@@ -175,7 +179,7 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 	fmt.Printf("Number of Accounts: %d, Average Balance per account: %s %s\n", numAccounts.Int64(), averageBalance.String(), config.Denom)
 
 	// Define minimum transfer amount to avoid dust transfers
-	minTransfer := sdkmath.NewInt(1000000) // Adjust based on your token's decimal places
+	minTransfer := sdkmath.NewInt(10000) // Adjust based on your token's decimal places
 	fmt.Printf("Minimum Transfer Amount to avoid dust: %s %s\n", minTransfer.String(), config.Denom)
 
 	// Create a slice to track balances that need to send or receive funds
@@ -281,6 +285,35 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 
 	fmt.Println("\nBalance adjustment complete.")
 	return nil
+}
+
+func shouldProceedWithBalances(balances map[string]sdkmath.Int) bool {
+	// Check if balances map is nil or empty
+	if balances == nil || len(balances) == 0 {
+		fmt.Println("No balances to check")
+		return false
+	}
+
+	if lib.CheckBalancesWithinThreshold(balances, 0.15) {
+		fmt.Println("Balances successfully adjusted within acceptable range")
+		return true
+	}
+
+	var maxBalance sdkmath.Int
+	for _, balance := range balances {
+		if balance.IsNil() {
+			continue // Skip nil balances
+		}
+		if maxBalance.IsNil() {
+			maxBalance = balance
+			continue
+		}
+		if balance.GT(maxBalance) {
+			maxBalance = balance
+		}
+	}
+
+	return false
 }
 
 func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.Int, config types.Config) error {
@@ -400,25 +433,54 @@ func handleBalanceAdjustment(accounts []types.Account, balances map[string]sdkma
 
 	return nil
 }
-
-func shouldProceedWithBalances(balances map[string]sdkmath.Int) bool {
-	if lib.CheckBalancesWithinThreshold(balances, 0.15) {
-		fmt.Println("Balances successfully adjusted within acceptable range")
-		return true
+func CheckBalancesWithinThreshold(balances map[string]sdkmath.Int, threshold float64) bool {
+	if balances == nil || len(balances) == 0 {
+		return false
 	}
 
-	var maxBalance sdkmath.Int
+	var minBalance, maxBalance sdkmath.Int
+	first := true
+
 	for _, balance := range balances {
+		if balance.IsNil() {
+			continue // Skip nil balances
+		}
+
+		if first {
+			minBalance = balance
+			maxBalance = balance
+			first = false
+			continue
+		}
+
+		if balance.LT(minBalance) {
+			minBalance = balance
+		}
 		if balance.GT(maxBalance) {
 			maxBalance = balance
 		}
 	}
 
-	minSignificantBalance := sdkmath.NewInt(1000000)
-	if maxBalance.LT(minSignificantBalance) {
-		fmt.Println("Remaining balance differences are below minimum threshold, proceeding")
+	// If we didn't find any valid balances
+	if first {
+		return false
+	}
+
+	// Skip check if all balances are below minimum threshold
+	minThreshold := sdkmath.NewInt(1000000) // 1 token assuming 6 decimals
+	if maxBalance.LT(minThreshold) {
 		return true
 	}
 
-	return false
+	// Calculate the difference as a percentage of the max balance
+	if maxBalance.IsZero() {
+		return minBalance.IsZero()
+	}
+
+	diff := maxBalance.Sub(minBalance)
+	diffFloat := float64(diff.Int64())
+	maxFloat := float64(maxBalance.Int64())
+
+	percentage := diffFloat / maxFloat
+	return percentage <= threshold
 }
