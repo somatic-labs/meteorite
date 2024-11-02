@@ -48,7 +48,7 @@ func GetAccountInfo(address string, config types.Config) (seqint, accnum uint64,
 
 	// Check if account is nil or sequence/account_number is empty
 	if accountRes.Account.Sequence == "" || accountRes.Account.AccountNumber == "" {
-		return 0, 0, fmt.Errorf("account does not exist or has no sequence/account_number")
+		return 0, 0, errors.New("account does not exist or has no sequence/account_number")
 	}
 
 	seqint, err = strconv.ParseUint(accountRes.Account.Sequence, 10, 64)

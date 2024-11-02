@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 	"time"
@@ -13,9 +14,7 @@ import (
 	"github.com/somatic-labs/meteorite/client"
 	"github.com/somatic-labs/meteorite/lib"
 	"github.com/somatic-labs/meteorite/types"
-	"golang.org/x/exp/rand"
 
-	"cosmossdk.io/log"
 	sdkmath "cosmossdk.io/math"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -27,18 +26,14 @@ const (
 )
 
 func main() {
-	logger := log.NewLogger(os.Stdout)
-
 	config := types.Config{}
 	if _, err := toml.DecodeFile("nodes.toml", &config); err != nil {
-		logger.Error("Failed to load config", "error", err)
+		log.Fatalf("Failed to load config: %v", err)
 	}
-
-	config.Logger = logger
 
 	mnemonic, err := os.ReadFile("seedphrase")
 	if err != nil {
-		logger.Error("Failed to read seed phrase", "error", err)
+		log.Fatalf("Failed to read seed phrase: %v", err)
 	}
 
 	// Set Bech32 prefixes and seal the configuration once
@@ -51,7 +46,7 @@ func main() {
 	positions := config.Positions
 	const MaxPositions = 100 // Adjust based on requirements
 	if positions <= 0 || positions > MaxPositions {
-		logger.Error(fmt.Sprintf("Number of positions must be between 1 and %d, got: %d", MaxPositions, positions))
+		log.Fatalf("Number of positions must be between 1 and %d, got: %d", MaxPositions, positions)
 	}
 	fmt.Println("Positions", positions)
 
@@ -60,7 +55,7 @@ func main() {
 		position := uint32(i)
 		privKey, pubKey, acctAddress := lib.GetPrivKey(config, mnemonic, position)
 		if privKey == nil || pubKey == nil || len(acctAddress) == 0 {
-			logger.Error(fmt.Sprintf("Failed to generate keys for position %d", position))
+			log.Fatalf("Failed to generate keys for position %d", position)
 		}
 		accounts = append(accounts, types.Account{
 			PrivKey:  privKey,
@@ -70,7 +65,7 @@ func main() {
 		})
 	}
 
-	// Print addresses and positions at startup
+	// **Print addresses and positions at startup**
 	fmt.Println("Addresses and Positions:")
 	for _, acct := range accounts {
 		fmt.Printf("Position %d: Address: %s\n", acct.Position, acct.Address)
@@ -79,7 +74,7 @@ func main() {
 	// Get balances and ensure they are within 10% of each other
 	balances, err := lib.GetBalances(accounts, config)
 	if err != nil {
-		logger.Error("Failed to get balances", "error", err)
+		log.Fatalf("Failed to get balances: %v", err)
 	}
 
 	// Print addresses and balances
@@ -87,7 +82,7 @@ func main() {
 	for _, acct := range accounts {
 		balance, err := lib.GetAccountBalance(acct.Address, config)
 		if err != nil {
-			logger.Error("Failed to get balance", "address", acct.Address, "error", err)
+			log.Printf("Failed to get balance for %s: %v", acct.Address, err)
 			continue
 		}
 		fmt.Printf("Position %d: Address: %s, Balance: %s %s\n", acct.Position, acct.Address, balance.String(), config.Denom)
@@ -98,7 +93,7 @@ func main() {
 	if !lib.CheckBalancesWithinThreshold(balances, 0.10) {
 		fmt.Println("Account balances are not within 10% of each other. Adjusting balances...")
 		if err := handleBalanceAdjustment(accounts, balances, config); err != nil {
-			logger.Error("Failed to handle balance adjustment", "error", err)
+			log.Fatalf("Failed to handle balance adjustment: %v", err)
 		}
 	}
 
@@ -106,10 +101,16 @@ func main() {
 
 	chainID, err := lib.GetChainID(nodeURL)
 	if err != nil {
-		logger.Error("Failed to get chain ID", "error", err)
+		log.Fatalf("Failed to get chain ID: %v", err)
 	}
 
-	//	msgParams := config.MsgParams
+	msgParams := config.MsgParams
+
+	// Initialize gRPC client
+	//	grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
+	//	if err != nil {
+	//		log.Fatalf("Failed to create gRPC client: %v", err)
+	//	}
 
 	var wg sync.WaitGroup
 	for _, account := range accounts {
@@ -120,31 +121,8 @@ func main() {
 			// Get account info
 			sequence, accNum, err := lib.GetAccountInfo(acct.Address, config)
 			if err != nil {
-				logger.Error("Failed to get account info", "address", acct.Address, "error", err)
+				log.Printf("Failed to get account info for %s: %v", acct.Address, err)
 				return
-			}
-
-			// Copy msgParams for this account
-			accountMsgParams := config.MsgParams
-
-			if config.Greed {
-				// When greed is true, send only to our generated addresses
-				toAcct := pickAnotherAccount(acct, accounts)
-				if toAcct == nil {
-					logger.Error("No other accounts to send to", "address", acct.Address)
-					return
-				}
-				accountMsgParams.ToAddress = toAcct.Address
-				logger.Info("Greed mode: Sending to address", "from", acct.Address, "to", toAcct.Address)
-			} else {
-				if accountMsgParams.ToAddress == "" {
-					// When greed is false and ToAddress is empty, send to random address
-					// The existing logic in send.go will handle generating a random address
-					logger.Info("Sending to random address because ToAddress is empty")
-				} else {
-					// Use the configured ToAddress
-					logger.Info("Sending to configured ToAddress", "to", accountMsgParams.ToAddress)
-				}
 			}
 
 			txParams := types.TransactionParams{
@@ -157,11 +135,11 @@ func main() {
 				PubKey:      acct.PubKey,
 				AcctAddress: acct.Address,
 				MsgType:     config.MsgType,
-				MsgParams:   accountMsgParams,
+				MsgParams:   msgParams,
 			}
 
 			// Broadcast transactions
-			successfulTxns, failedTxns, responseCodes, _ := broadcast.Loop(txParams, BatchSize, int(acct.Position), config.BroadcastModes[0])
+			successfulTxns, failedTxns, responseCodes, _ := broadcast.Loop(txParams, BatchSize, int(acct.Position), config.Denom)
 
 			fmt.Printf("Account %s: Successful transactions: %d, Failed transactions: %d\n", acct.Address, successfulTxns, failedTxns)
 			fmt.Println("Response code breakdown:")
@@ -358,18 +336,23 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 
 		resp, _, err := broadcast.SendTransactionViaGRPC(ctx, txParams, sequence, grpcClient)
 		if err != nil {
-			config.Logger.Error("Transaction failed",
-				"error", err,
-				"sequence", sequence)
-		} else if resp != nil && resp.Code == 0 {
-			config.Logger.Info("Transaction successful",
-				"txhash", resp.TxHash,
-				"sequence", sequence,
-				"gas_used", resp.GasUsed)
-		}
+			fmt.Printf("Transaction failed: %v\n", err)
 
-		if resp.Code == 0 {
-			fmt.Printf("Transaction successful - TxHash: %s\n", resp.TxHash)
+			// Check if the error is a sequence mismatch error (code 32)
+			if resp != nil && resp.Code == 32 {
+				expectedSeq, parseErr := lib.ExtractExpectedSequence(resp.RawLog)
+				if parseErr != nil {
+					return fmt.Errorf("failed to parse expected sequence: %v", parseErr)
+				}
+
+				// Update sequence and retry
+				sequence = expectedSeq
+				txParams.Sequence = sequence
+				fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", sequence)
+				continue
+			}
+
+			return fmt.Errorf("failed to send transaction: %v", err)
 		}
 
 		if resp.Code != 0 {
@@ -387,25 +370,6 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 				txParams.Sequence = sequence
 				fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", sequence)
 				continue
-			}
-
-			// Assuming you are inside the loop where you handle the transaction response
-			if resp.Code == 41 {
-				fmt.Printf("Transaction failed with code %d: %s\n", resp.Code, resp.RawLog)
-				maxBlockGas := 75000000
-				newGasLimit := maxBlockGas - 1000000
-				txParams.Config.Gas.Limit = int64(newGasLimit)
-				fmt.Printf("Reducing gas limit to %d and retrying...\n", newGasLimit)
-
-				// Retry sending the transaction
-				resp, _, err = broadcast.SendTransactionViaGRPC(ctx, txParams, sequence, grpcClient)
-				if resp.Code != 0 {
-					fmt.Printf("Transaction failed with code %d: %s\n", resp.Code, resp.RawLog)
-					continue
-				}
-				if err != nil {
-					return fmt.Errorf("failed to send transaction: %v", err)
-				}
 			}
 
 			return fmt.Errorf("transaction failed with code %d: %s", resp.Code, resp.RawLog)
@@ -457,31 +421,4 @@ func shouldProceedWithBalances(balances map[string]sdkmath.Int) bool {
 	}
 
 	return false
-}
-
-func displayStats(stats map[string]types.TransmissionStats) {
-	fmt.Println("Transmission Stats:")
-	for mode, stat := range stats {
-		fmt.Printf("Mode: %s\n", mode)
-		fmt.Printf("  Successful Transactions: %d\n", stat.Successful)
-		fmt.Printf("  Failed Transactions: %d\n", stat.Failed)
-		for code, count := range stat.ResponseCodes {
-			fmt.Printf("  Response Code %d: %d times\n", code, count)
-		}
-	}
-}
-
-func pickAnotherAccount(current types.Account, accounts []types.Account) *types.Account {
-	var otherAccounts []types.Account
-	for _, acct := range accounts {
-		if acct.Address != current.Address {
-			otherAccounts = append(otherAccounts, acct)
-		}
-	}
-	if len(otherAccounts) == 0 {
-		return nil
-	}
-	rand.Seed(uint64(time.Now().UnixNano()))
-	index := rand.Intn(len(otherAccounts))
-	return &otherAccounts[index]
 }
