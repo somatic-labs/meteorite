@@ -20,7 +20,7 @@ func CreateBankSendMsg(config types.Config, fromAddress string, msgParams types.
 
 	toAccAddress, err := sdk.AccAddressFromBech32(msgParams.ToAddress)
 	if err != nil {
-		fmt.Println("invalid to address, spamming random new accounts")
+		//		fmt.Println("invalid to address, in nodes.toml, automatically spamming random new accounts")
 		toAccAddress, err = lib.GenerateRandomAccount()
 		if err != nil {
 			return nil, "", fmt.Errorf("error generating random account: %w", err)

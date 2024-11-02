@@ -23,7 +23,8 @@ type TimingMetrics struct {
 	Position   int
 }
 
-func (t *TimingMetrics) LogTiming(sequence uint64, success bool, err error) {
+func (t *TimingMetrics) LogTiming(sequence uint64, txHash string, success bool, err error) {
+	timeFormat := "2006-01-02 15:04:05.000"
 	prepTime := t.SignStart.Sub(t.PrepStart)
 	signTime := t.BroadStart.Sub(t.SignStart)
 	broadcastTime := t.Complete.Sub(t.BroadStart)
@@ -34,15 +35,21 @@ func (t *TimingMetrics) LogTiming(sequence uint64, success bool, err error) {
 		status = "FAILED"
 	}
 
-	fmt.Printf("[POS-%d] %s Transaction %s: seq=%d prep=%v sign=%v broadcast=%v total=%v%s\n",
+	txStatus := ""
+	if txHash != "" {
+		txStatus = fmt.Sprintf(" txhash=%s", txHash)
+	}
+
+	fmt.Printf("[POS-%d] [%s] %s seq=%d prep=%v sign=%v broadcast=%v total=%v%s%s\n",
 		t.Position,
-		time.Now().Format("15:04:05.000"),
+		time.Now().Format(timeFormat),
 		status,
 		sequence,
 		prepTime,
 		signTime,
 		broadcastTime,
 		totalTime,
+		txStatus,
 		formatError(err))
 }
 
@@ -81,6 +88,10 @@ func Loop(
 	responseCodes = make(map[uint32]int)
 	sequence := txParams.Sequence
 
+	txParams.Config.Logger.Info("Starting transaction loop",
+		"position", position,
+		"batch_size", batchSize)
+
 	for i := 0; i < batchSize; i++ {
 		currentSequence := sequence
 		metrics := &TimingMetrics{
@@ -94,7 +105,7 @@ func Loop(
 		metrics.Complete = time.Now()
 
 		if err != nil {
-			metrics.LogTiming(currentSequence, false, err)
+			metrics.LogTiming(currentSequence, "", false, err)
 			failedTxns++
 
 			if resp != nil && resp.Code == 32 {
@@ -109,10 +120,17 @@ func Loop(
 			continue
 		}
 
-		metrics.LogTiming(currentSequence, true, nil)
+		metrics.LogTiming(currentSequence, "", true, nil)
 		successfulTxns++
 		responseCodes[resp.Code]++
 		sequence++
+
+		if resp.Code == 0 {
+			txParams.Config.Logger.Info("Transaction successful",
+				"txhash", resp.Hash,
+				"sequence", sequence,
+				"position", position)
+		}
 	}
 
 	updatedSequence = sequence
@@ -140,10 +158,10 @@ func handleSequenceMismatch(txParams types.TransactionParams, position int, sequ
 	metrics.Complete = time.Now()
 
 	if err != nil {
-		metrics.LogTiming(expectedSeq, false, err)
+		metrics.LogTiming(expectedSeq, "", false, err)
 		return expectedSeq, false, nil
 	}
 
-	metrics.LogTiming(expectedSeq, true, nil)
+	metrics.LogTiming(expectedSeq, "", true, nil)
 	return expectedSeq + 1, true, resp
 }

@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"sync"
 	"time"
 
+	"cosmossdk.io/log"
 	"github.com/BurntSushi/toml"
 	"github.com/somatic-labs/meteorite/broadcast"
 	"github.com/somatic-labs/meteorite/client"
@@ -26,14 +26,18 @@ const (
 )
 
 func main() {
+	logger := log.NewLogger(os.Stdout)
+
 	config := types.Config{}
 	if _, err := toml.DecodeFile("nodes.toml", &config); err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		logger.Error("Failed to load config", "error", err)
 	}
+
+	config.Logger = logger
 
 	mnemonic, err := os.ReadFile("seedphrase")
 	if err != nil {
-		log.Fatalf("Failed to read seed phrase: %v", err)
+		logger.Error("Failed to read seed phrase", "error", err)
 	}
 
 	// Set Bech32 prefixes and seal the configuration once
@@ -46,7 +50,7 @@ func main() {
 	positions := config.Positions
 	const MaxPositions = 100 // Adjust based on requirements
 	if positions <= 0 || positions > MaxPositions {
-		log.Fatalf("Number of positions must be between 1 and %d, got: %d", MaxPositions, positions)
+		logger.Error("Number of positions must be between 1 and %d, got: %d", MaxPositions, positions)
 	}
 	fmt.Println("Positions", positions)
 
@@ -55,7 +59,7 @@ func main() {
 		position := uint32(i)
 		privKey, pubKey, acctAddress := lib.GetPrivKey(config, mnemonic, position)
 		if privKey == nil || pubKey == nil || len(acctAddress) == 0 {
-			log.Fatalf("Failed to generate keys for position %d", position)
+			logger.Error("Failed to generate keys for position %d", "position", position)
 		}
 		accounts = append(accounts, types.Account{
 			PrivKey:  privKey,
@@ -74,7 +78,7 @@ func main() {
 	// Get balances and ensure they are within 10% of each other
 	balances, err := lib.GetBalances(accounts, config)
 	if err != nil {
-		log.Fatalf("Failed to get balances: %v", err)
+		logger.Error("Failed to get balances", "error", err)
 	}
 
 	// Print addresses and balances
@@ -82,7 +86,7 @@ func main() {
 	for _, acct := range accounts {
 		balance, err := lib.GetAccountBalance(acct.Address, config)
 		if err != nil {
-			log.Printf("Failed to get balance for %s: %v", acct.Address, err)
+			logger.Error("Failed to get balance", "address", acct.Address, "error", err)
 			continue
 		}
 		fmt.Printf("Position %d: Address: %s, Balance: %s %s\n", acct.Position, acct.Address, balance.String(), config.Denom)
@@ -93,7 +97,7 @@ func main() {
 	if !lib.CheckBalancesWithinThreshold(balances, 0.10) {
 		fmt.Println("Account balances are not within 10% of each other. Adjusting balances...")
 		if err := handleBalanceAdjustment(accounts, balances, config); err != nil {
-			log.Fatalf("Failed to handle balance adjustment: %v", err)
+			logger.Error("Failed to handle balance adjustment", "error", err)
 		}
 	}
 
@@ -101,7 +105,7 @@ func main() {
 
 	chainID, err := lib.GetChainID(nodeURL)
 	if err != nil {
-		log.Fatalf("Failed to get chain ID: %v", err)
+		logger.Error("Failed to get chain ID", "error", err)
 	}
 
 	msgParams := config.MsgParams
@@ -121,7 +125,7 @@ func main() {
 			// Get account info
 			sequence, accNum, err := lib.GetAccountInfo(acct.Address, config)
 			if err != nil {
-				log.Printf("Failed to get account info for %s: %v", acct.Address, err)
+				logger.Error("Failed to get account info", "address", acct.Address, "error", err)
 				return
 			}
 
@@ -336,23 +340,18 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 
 		resp, _, err := broadcast.SendTransactionViaGRPC(ctx, txParams, sequence, grpcClient)
 		if err != nil {
-			fmt.Printf("Transaction failed: %v\n", err)
+			config.Logger.Error("Transaction failed",
+				"error", err,
+				"sequence", sequence)
+		} else if resp != nil && resp.Code == 0 {
+			config.Logger.Info("Transaction successful",
+				"txhash", resp.TxHash,
+				"sequence", sequence,
+				"gas_used", resp.GasUsed)
+		}
 
-			// Check if the error is a sequence mismatch error (code 32)
-			if resp != nil && resp.Code == 32 {
-				expectedSeq, parseErr := lib.ExtractExpectedSequence(resp.RawLog)
-				if parseErr != nil {
-					return fmt.Errorf("failed to parse expected sequence: %v", parseErr)
-				}
-
-				// Update sequence and retry
-				sequence = expectedSeq
-				txParams.Sequence = sequence
-				fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", sequence)
-				continue
-			}
-
-			return fmt.Errorf("failed to send transaction: %v", err)
+		if resp.Code == 0 {
+			fmt.Printf("Transaction successful - TxHash: %s\n", resp.TxHash)
 		}
 
 		if resp.Code != 0 {
@@ -370,6 +369,25 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 				txParams.Sequence = sequence
 				fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", sequence)
 				continue
+			}
+
+			// Assuming you are inside the loop where you handle the transaction response
+			if resp.Code == 41 {
+				fmt.Printf("Transaction failed with code %d: %s\n", resp.Code, resp.RawLog)
+				maxBlockGas := 75000000
+				newGasLimit := maxBlockGas - 1000000
+				txParams.Config.Gas.Limit = int64(newGasLimit)
+				fmt.Printf("Reducing gas limit to %d and retrying...\n", newGasLimit)
+
+				// Retry sending the transaction
+				resp, _, err = broadcast.SendTransactionViaGRPC(ctx, txParams, sequence, grpcClient)
+				if resp.Code != 0 {
+					fmt.Printf("Transaction failed with code %d: %s\n", resp.Code, resp.RawLog)
+					continue
+				}
+				if err != nil {
+					return fmt.Errorf("failed to send transaction: %v", err)
+				}
 			}
 
 			return fmt.Errorf("transaction failed with code %d: %s", resp.Code, resp.RawLog)

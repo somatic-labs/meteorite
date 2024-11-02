@@ -74,10 +74,23 @@ func BuildAndSignTransaction(
 		return nil, err
 	}
 
-	// Estimate gas limit
+	// Estimate gas limit with a buffer
 	txSize := len(msg.String())
-	gasLimit := uint64(int64(txSize)*txParams.Config.GasPerByte + txParams.Config.BaseGas)
-	txBuilder.SetGasLimit(gasLimit)
+	baseGas := txParams.Config.BaseGas
+	gasPerByte := txParams.Config.GasPerByte
+
+	// Calculate estimated gas
+	estimatedGas := uint64(int64(txSize)*gasPerByte + baseGas)
+
+	// Add a buffer (e.g., 20%)
+	buffer := uint64(float64(estimatedGas) * 0.2)
+	gasLimit := estimatedGas + buffer
+
+	if txParams.Config.Gas.Limit > 0 {
+		txBuilder.SetGasLimit(uint64(txParams.Config.Gas.Limit))
+	} else {
+		txBuilder.SetGasLimit(gasLimit)
+	}
 
 	// Calculate fee
 	gasPrice := sdk.NewDecCoinFromDec(

@@ -3,22 +3,28 @@ package broadcast
 import (
 	"context"
 	"fmt"
+	"log"
+	"net/http"
 	"sync"
 	"time"
 
 	cometrpc "github.com/cometbft/cometbft/rpc/client/http"
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
-	tmtypes "github.com/cometbft/cometbft/types"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type Client struct {
-	client *cometrpc.HTTP
+	client  *cometrpc.HTTP
+	pool    chan *cometrpc.HTTP
+	metrics *ClientMetrics
 }
 
 var (
 	clients    = make(map[string]*Client)
 	clientsMux sync.RWMutex
 )
+
+const maxPoolSize = 100
 
 func GetClient(rpcEndpoint string) (*Client, error) {
 	clientsMux.RLock()
@@ -28,41 +34,129 @@ func GetClient(rpcEndpoint string) (*Client, error) {
 	}
 	clientsMux.RUnlock()
 
-	// If client doesn't exist, acquire write lock and create it
 	clientsMux.Lock()
 	defer clientsMux.Unlock()
 
-	// Double-check after acquiring write lock
 	if client, exists := clients[rpcEndpoint]; exists {
 		return client, nil
 	}
 
-	// Create new client
-	cmtCli, err := cometrpc.New(rpcEndpoint, "/websocket")
-	if err != nil {
-		return nil, err
+	// Create connection pool
+	pool := make(chan *cometrpc.HTTP, maxPoolSize)
+	for i := 0; i < maxPoolSize; i++ {
+		// Add HTTP client configuration
+		config := &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:        200,
+				MaxIdleConnsPerHost: 100,
+				IdleConnTimeout:     30 * time.Second,
+				DisableKeepAlives:   false,
+				ForceAttemptHTTP2:   true,
+				MaxConnsPerHost:     200,
+			},
+			Timeout: 10 * time.Second,
+		}
+
+		cmtCli, err := cometrpc.NewWithClient(rpcEndpoint, "/websocket", config)
+		if err != nil {
+			return nil, err
+		}
+		pool <- cmtCli
 	}
 
 	client := &Client{
-		client: cmtCli,
+		pool: pool,
 	}
 	clients[rpcEndpoint] = client
 	return client, nil
 }
 
+type ClientMetrics struct {
+	poolGetLatency    prometheus.Histogram
+	poolReturnLatency prometheus.Histogram
+	rpcLatency        prometheus.Histogram
+}
+
 func (b *Client) Transaction(txBytes []byte) (*coretypes.ResultBroadcastTx, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	metrics := &BroadcastMetrics{
+		Start:           time.Now(),
+		PoolGetStart:    time.Time{},
+		RpcCallStart:    time.Time{},
+		PoolReturnStart: time.Time{},
+		Complete:        time.Time{},
+	}
+	defer metrics.LogTiming("")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	t := tmtypes.Tx(txBytes)
-	res, err := b.client.BroadcastTxSync(ctx, t)
-	if err != nil {
-		return nil, err
+	// Get client from pool with timeout
+	metrics.PoolGetStart = time.Now()
+	select {
+	case client := <-b.pool:
+		if b.metrics != nil {
+			b.metrics.poolGetLatency.Observe(time.Since(metrics.PoolGetStart).Seconds())
+		}
+
+		// Execute RPC call
+		metrics.RpcCallStart = time.Now()
+		result, err := client.BroadcastTxSync(ctx, txBytes)
+		if b.metrics != nil {
+			b.metrics.rpcLatency.Observe(time.Since(metrics.RpcCallStart).Seconds())
+		}
+
+		// Return client to pool with timeout
+		metrics.PoolReturnStart = time.Now()
+		select {
+		case b.pool <- client:
+			if b.metrics != nil {
+				b.metrics.poolReturnLatency.Observe(time.Since(metrics.PoolReturnStart).Seconds())
+			}
+		case <-time.After(100 * time.Millisecond):
+			log.Printf("Warning: Client pool return timed out after 100ms")
+		}
+
+		metrics.Complete = time.Now()
+		return result, err
+
+	case <-ctx.Done():
+		metrics.Complete = time.Now()
+		return nil, fmt.Errorf("timeout waiting for client from pool: %v", ctx.Err())
+	}
+}
+
+type BroadcastMetrics struct {
+	Start           time.Time
+	PoolGetStart    time.Time
+	RpcCallStart    time.Time
+	PoolReturnStart time.Time
+	Complete        time.Time
+}
+
+func (m *BroadcastMetrics) LogTiming(txHash string) {
+	timeFormat := "2006-01-02 15:04:05.000"
+	poolGetTime := m.RpcCallStart.Sub(m.PoolGetStart)
+	rpcCallTime := m.PoolReturnStart.Sub(m.RpcCallStart)
+	poolReturnTime := m.Complete.Sub(m.PoolReturnStart)
+	totalTime := m.Complete.Sub(m.Start)
+
+	status := "SUCCESS"
+	if txHash == "" {
+		status = "FAILED"
 	}
 
-	if res.Code != 0 {
-		return res, fmt.Errorf("broadcast error code %d: %s", res.Code, res.Log)
+	txStatus := ""
+	if txHash != "" {
+		txStatus = fmt.Sprintf(" txHash=%s", txHash)
 	}
 
-	return res, nil
+	log.Printf("[%s] %s: pool_get=%v rpc_call=%v pool_return=%v total=%v%s",
+		m.Start.Format(timeFormat),
+		status,
+		poolGetTime,
+		rpcCallTime,
+		poolReturnTime,
+		totalTime,
+		txStatus,
+	)
 }
