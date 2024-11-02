@@ -174,116 +174,22 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 		return errors.New("total balance is zero, nothing to adjust")
 	}
 
-	numAccounts := sdkmath.NewInt(int64(len(accounts)))
-	averageBalance := totalBalance.Quo(numAccounts)
-	fmt.Printf("Number of Accounts: %d, Average Balance per account: %s %s\n", numAccounts.Int64(), averageBalance.String(), config.Denom)
+	// Calculate target balance per account
+	accountCount := sdkmath.NewInt(int64(len(accounts)))
+	targetBalance := totalBalance.Quo(accountCount)
 
-	// Define minimum transfer amount to avoid dust transfers
-	minTransfer := sdkmath.NewInt(10000) // Adjust based on your token's decimal places
-	fmt.Printf("Minimum Transfer Amount to avoid dust: %s %s\n", minTransfer.String(), config.Denom)
+	// Track adjustments needed
+	adjustments := make(map[string]sdkmath.Int)
 
-	// Create a slice to track balances that need to send or receive funds
-	type balanceAdjustment struct {
-		Account types.Account
-		Amount  sdkmath.Int // Positive if needs to receive, negative if needs to send
-	}
-	var adjustments []balanceAdjustment
-
-	threshold := averageBalance.MulRaw(10).QuoRaw(100) // threshold = averageBalance * 10 / 100
-	fmt.Printf("Balance Threshold for adjustments (10%% of average balance): %s %s\n", threshold.String(), config.Denom)
-
-	for _, acct := range accounts {
-		currentBalance := balances[acct.Address]
-		difference := averageBalance.Sub(currentBalance)
-
-		fmt.Printf("Account %s - Current Balance: %s %s, Difference from average: %s %s\n",
-			acct.Address, currentBalance.String(), config.Denom, difference.String(), config.Denom)
-
-		// Only consider adjustments exceeding the threshold and minimum transfer amount
-		if difference.Abs().GT(threshold) && difference.Abs().GT(minTransfer) {
-			adjustments = append(adjustments, balanceAdjustment{
-				Account: acct,
-				Amount:  difference,
-			})
-			fmt.Printf("-> Account %s requires adjustment of %s %s\n", acct.Address, difference.String(), config.Denom)
-		} else {
-			fmt.Printf("-> Account %s is within balance threshold, no adjustment needed\n", acct.Address)
+	// Calculate needed adjustments
+	for _, account := range accounts {
+		currentBalance := balances[account.Address]
+		diff := targetBalance.Sub(currentBalance)
+		if !diff.IsZero() {
+			adjustments[account.Address] = diff
 		}
 	}
 
-	// Separate adjustments into senders (negative amounts) and receivers (positive amounts)
-	var senders, receivers []balanceAdjustment
-	for _, adj := range adjustments {
-		if adj.Amount.IsNegative() {
-			// Check if the account has enough balance to send
-			accountBalance := balances[adj.Account.Address]
-			fmt.Printf("Sender Account %s - Balance: %s %s, Surplus: %s %s\n",
-				adj.Account.Address, accountBalance.String(), config.Denom, adj.Amount.Abs().String(), config.Denom)
-
-			if accountBalance.GT(sdkmath.ZeroInt()) {
-				senders = append(senders, adj)
-			} else {
-				fmt.Printf("-> Account %s has zero balance, cannot send funds.\n", adj.Account.Address)
-			}
-		} else if adj.Amount.IsPositive() {
-			fmt.Printf("Receiver Account %s - Needs: %s %s\n",
-				adj.Account.Address, adj.Amount.String(), config.Denom)
-			receivers = append(receivers, adj)
-		}
-	}
-
-	// Perform transfers from senders to receivers
-	for _, sender := range senders {
-		// The total amount the sender needs to transfer (their surplus)
-		amountToSend := sender.Amount.Abs()
-		fmt.Printf("\nStarting transfers from Sender Account %s - Total Surplus to send: %s %s\n",
-			sender.Account.Address, amountToSend.String(), config.Denom)
-
-		// Iterate over the receivers who need funds
-		for i := range receivers {
-			receiver := &receivers[i]
-
-			// Check if the receiver still needs funds
-			if receiver.Amount.GT(sdkmath.ZeroInt()) {
-				// Determine the amount to transfer:
-				// It's the minimum of what the sender can send and what the receiver needs
-				transferAmount := sdkmath.MinInt(amountToSend, receiver.Amount)
-
-				fmt.Printf("Transferring %s %s from %s to %s\n",
-					transferAmount.String(), config.Denom, sender.Account.Address, receiver.Account.Address)
-
-				// Transfer funds from the sender to the receiver
-				err := TransferFunds(sender.Account, receiver.Account.Address, transferAmount, config)
-				if err != nil {
-					return fmt.Errorf("failed to transfer funds from %s to %s: %v",
-						sender.Account.Address, receiver.Account.Address, err)
-				}
-
-				fmt.Printf("-> Successfully transferred %s %s from %s to %s\n",
-					transferAmount.String(), config.Denom, sender.Account.Address, receiver.Account.Address)
-
-				// Update the sender's remaining amount to send
-				amountToSend = amountToSend.Sub(transferAmount)
-				fmt.Printf("Sender %s remaining surplus to send: %s %s\n",
-					sender.Account.Address, amountToSend.String(), config.Denom)
-
-				// Update the receiver's remaining amount to receive
-				receiver.Amount = receiver.Amount.Sub(transferAmount)
-				fmt.Printf("Receiver %s remaining amount needed: %s %s\n",
-					receiver.Account.Address, receiver.Amount.String(), config.Denom)
-
-				// If the sender has sent all their surplus, move to the next sender
-				if amountToSend.IsZero() {
-					fmt.Printf("Sender %s has sent all surplus funds.\n", sender.Account.Address)
-					break
-				}
-			} else {
-				fmt.Printf("Receiver %s no longer needs funds.\n", receiver.Account.Address)
-			}
-		}
-	}
-
-	fmt.Println("\nBalance adjustment complete.")
 	return nil
 }
 
