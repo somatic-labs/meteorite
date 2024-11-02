@@ -1,9 +1,9 @@
 # configurations/contract_store_spam/nodes.toml
 
-chain = "mantra-canary-net-1"
+chain = "atomone-1"
 channel = "channel-1"
-denom = "uom"
-prefix = "mantra"
+denom = "atom"
+prefix = "atone"
 gas_per_byte = 100
 base_gas = 170000
 memo = "Storing compiled contract with randomized memo"
@@ -44,7 +44,7 @@ label = "statefilestore"
 
 [gas]
 low = 25
-precision = 3
+precision = 4
 # limit = 75000000
 
 [nodes]
