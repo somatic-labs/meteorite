@@ -1,0 +1,58 @@
+# configurations/contract_store_spam/nodes.toml
+
+chain = "mantra-canary-net-1"
+channel = "channel-1"
+denom = "uom"
+prefix = "mantra"
+gas_per_byte = 100
+base_gas = 170000
+memo = "Storing compiled contract with randomized memo"
+ibc_memo_repeat = 10
+rand_min = 15000
+rand_max = 30000
+revision_number = 4
+timeout_height = 21720608
+slip44 = 118
+positions = 100                                         # Number of positions to use from the seed phrase
+
+broadcast_modes = [
+    "grpc",
+    #    "rpc",
+    #    "api",
+] # Use an array to specify multiple modes
+
+msg_type = "bank_send"
+
+[msg_params]
+
+# if this field is left blank as "", meteorite will send to random accounts endlessly
+to_address = ""
+amount = 1
+
+
+#[msg_params]
+wasm_file = "/Users/faddat/meteorite/target/wasm32-unknown-unknown/release/statefilestore.wasm"
+label = "statefilestore"
+
+#msg_type = "instantiate_contract"
+
+#[msg_params]
+#code_id = 1830
+#label = "statefilestore"
+#init_msg = '{}'
+#amount = 1000
+
+[gas]
+low = 25
+precision = 3
+# limit = 75000000
+
+[nodes]
+rpc = ["http://127.0.0.1:26657"]
+api = "http://localhost:1317"
+grpc = "localhost:9090"
+
+
+## IBC Transfer
+# msg_type = "ibc_transfer"
+ibc_memo = "Contract store spam test"
