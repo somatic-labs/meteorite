@@ -22,7 +22,7 @@ func SendTransactionViaGRPC(
 	encodingConfig.Codec = cdc
 
 	// Build and sign the transaction
-	txBytes, err := BuildAndSignTransaction(ctx, txParams, sequence, encodingConfig)
+	txBytes, err := BuildAndSignTransaction(txParams, sequence, encodingConfig)
 	if err != nil {
 		return nil, "", err
 	}

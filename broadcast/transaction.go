@@ -1,7 +1,6 @@
 package broadcast
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/cosmos/ibc-go/v7/modules/apps/transfer"
@@ -26,7 +25,7 @@ import (
 )
 
 func BuildAndSignTransaction(
-	ctx context.Context,
+	//	ctx context.Context,
 	txParams types.TransactionParams,
 	sequence uint64,
 	encodingConfig params.EncodingConfig,

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -312,9 +311,8 @@ func TestBuildAndSignTransaction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
 			encodingConfig := params.MakeTestEncodingConfig()
-			_, err := broadcast.BuildAndSignTransaction(ctx, tt.txParams, tt.sequence, encodingConfig)
+			_, err := broadcast.BuildAndSignTransaction(tt.txParams, tt.sequence, encodingConfig)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("BuildAndSignTransaction() error = %v, wantErr %v", err, tt.wantErr)
 				return

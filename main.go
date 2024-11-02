@@ -13,6 +13,7 @@ import (
 	"github.com/somatic-labs/meteorite/client"
 	"github.com/somatic-labs/meteorite/lib"
 	"github.com/somatic-labs/meteorite/types"
+	"golang.org/x/exp/rand"
 
 	"cosmossdk.io/log"
 	sdkmath "cosmossdk.io/math"
@@ -50,7 +51,7 @@ func main() {
 	positions := config.Positions
 	const MaxPositions = 100 // Adjust based on requirements
 	if positions <= 0 || positions > MaxPositions {
-		logger.Error("Number of positions must be between 1 and %d, got: %d", MaxPositions, positions)
+		logger.Error(fmt.Sprintf("Number of positions must be between 1 and %d, got: %d", MaxPositions, positions))
 	}
 	fmt.Println("Positions", positions)
 
@@ -59,7 +60,7 @@ func main() {
 		position := uint32(i)
 		privKey, pubKey, acctAddress := lib.GetPrivKey(config, mnemonic, position)
 		if privKey == nil || pubKey == nil || len(acctAddress) == 0 {
-			logger.Error("Failed to generate keys for position %d", "position", position)
+			logger.Error(fmt.Sprintf("Failed to generate keys for position %d", position))
 		}
 		accounts = append(accounts, types.Account{
 			PrivKey:  privKey,
@@ -69,7 +70,7 @@ func main() {
 		})
 	}
 
-	// **Print addresses and positions at startup**
+	// Print addresses and positions at startup
 	fmt.Println("Addresses and Positions:")
 	for _, acct := range accounts {
 		fmt.Printf("Position %d: Address: %s\n", acct.Position, acct.Address)
@@ -108,13 +109,7 @@ func main() {
 		logger.Error("Failed to get chain ID", "error", err)
 	}
 
-	msgParams := config.MsgParams
-
-	// Initialize gRPC client
-	//	grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
-	//	if err != nil {
-	//		log.Fatalf("Failed to create gRPC client: %v", err)
-	//	}
+	//	msgParams := config.MsgParams
 
 	var wg sync.WaitGroup
 	for _, account := range accounts {
@@ -129,6 +124,29 @@ func main() {
 				return
 			}
 
+			// Copy msgParams for this account
+			accountMsgParams := config.MsgParams
+
+			if config.Greed {
+				// When greed is true, send only to our generated addresses
+				toAcct := pickAnotherAccount(acct, accounts)
+				if toAcct == nil {
+					logger.Error("No other accounts to send to", "address", acct.Address)
+					return
+				}
+				accountMsgParams.ToAddress = toAcct.Address
+				logger.Info("Greed mode: Sending to address", "from", acct.Address, "to", toAcct.Address)
+			} else {
+				if accountMsgParams.ToAddress == "" {
+					// When greed is false and ToAddress is empty, send to random address
+					// The existing logic in send.go will handle generating a random address
+					logger.Info("Sending to random address because ToAddress is empty")
+				} else {
+					// Use the configured ToAddress
+					logger.Info("Sending to configured ToAddress", "to", accountMsgParams.ToAddress)
+				}
+			}
+
 			txParams := types.TransactionParams{
 				Config:      config,
 				NodeURL:     nodeURL,
@@ -139,7 +157,7 @@ func main() {
 				PubKey:      acct.PubKey,
 				AcctAddress: acct.Address,
 				MsgType:     config.MsgType,
-				MsgParams:   msgParams,
+				MsgParams:   accountMsgParams,
 			}
 
 			// Broadcast transactions
@@ -451,4 +469,19 @@ func displayStats(stats map[string]types.TransmissionStats) {
 			fmt.Printf("  Response Code %d: %d times\n", code, count)
 		}
 	}
+}
+
+func pickAnotherAccount(current types.Account, accounts []types.Account) *types.Account {
+	var otherAccounts []types.Account
+	for _, acct := range accounts {
+		if acct.Address != current.Address {
+			otherAccounts = append(otherAccounts, acct)
+		}
+	}
+	if len(otherAccounts) == 0 {
+		return nil
+	}
+	rand.Seed(uint64(time.Now().UnixNano()))
+	index := rand.Intn(len(otherAccounts))
+	return &otherAccounts[index]
 }

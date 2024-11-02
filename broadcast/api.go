@@ -2,7 +2,6 @@ package broadcast
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -24,7 +23,7 @@ func SendTransactionViaAPI(txParams types.TransactionParams, sequence uint64) (*
 	logger := txParams.Config.Logger
 
 	// Build and sign the transaction
-	txBytes, err := BuildAndSignTransaction(context.Background(), txParams, sequence, encodingConfig)
+	txBytes, err := BuildAndSignTransaction(txParams, sequence, encodingConfig)
 	if err != nil {
 		logger.Error("Failed to build and sign transaction", "error", err)
 		return nil, "", err

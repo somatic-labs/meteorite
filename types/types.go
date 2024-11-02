@@ -145,6 +145,7 @@ type Config struct {
 	Slip44         int         `toml:"slip44"`
 	MsgType        string      `toml:"msg_type"`
 	MsgParams      MsgParams   `toml:"msg_params"`
+	Greed          bool        `toml:"greed"`
 	Gas            GasConfig   `toml:"gas"`
 	Nodes          NodesConfig `toml:"nodes"`
 	BroadcastModes []string    `toml:"broadcast_modes"`

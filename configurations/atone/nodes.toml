@@ -13,7 +13,8 @@ rand_max = 30000
 revision_number = 4
 timeout_height = 21720608
 slip44 = 118
-positions = 100                                         # Number of positions to use from the seed phrase
+positions = 100
+greed = true                                            # greed mode will ensure that the accounts send to each other instead of a randomly generated address                                        # Number of positions to use from the seed phrase
 
 broadcast_modes = [
     "grpc",

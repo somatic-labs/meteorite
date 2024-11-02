@@ -1,7 +1,6 @@
 package broadcast
 
 import (
-	"context"
 	"fmt"
 
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
@@ -15,10 +14,8 @@ func SendTransactionViaRPC(txParams types.TransactionParams, sequence uint64) (*
 	encodingConfig := params.MakeTestEncodingConfig()
 	encodingConfig.Codec = cdc
 
-	ctx := context.Background()
-
 	// Build and sign the transaction
-	txBytes, err := BuildAndSignTransaction(ctx, txParams, sequence, encodingConfig)
+	txBytes, err := BuildAndSignTransaction(txParams, sequence, encodingConfig)
 	if err != nil {
 		return nil, "", err
 	}
