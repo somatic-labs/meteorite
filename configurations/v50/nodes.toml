@@ -1,0 +1,30 @@
+# configurations/contract_store_spam/nodes.toml
+
+chain = "mantra"
+channel = "channel-1"
+denom = "uom"
+prefix = "mantra"
+gas_per_byte = 100
+base_gas = 200000
+ibc_memo = "Contract store spam test"
+memo = "Storing compiled contract with randomized memo"
+ibc_memo_repeat = 10
+rand_min = 15000
+rand_max = 30000
+revision_number = 4
+timeout_height = 21720608
+slip44 = 118
+
+msg_type = "store_code"
+
+[msg_params]
+wasm_byte_code = "target/wasm32-unknown-unknown/release/statefilestore.wasm"
+label = "statefilestore"
+
+[gas]
+low = 1
+precision = 2
+
+[nodes]
+rpc = ["http://127.0.0.1:26657"]
+api = "https://api.dukong.mantrachain.dev:443"

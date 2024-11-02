@@ -1,0 +1,17 @@
+[package]
+name = "statefilestore"
+version = "0.1.0"
+edition = "2018"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cosmwasm-std = "2.1.4"
+schemars = "0.8.8"
+serde = { version = "1.0.104", features = ["derive"] }
+cw-storage-plus = "2.0.0"
+sha2 = "0.10.0"
+data-encoding = "2.3.2"
+hex = "0.4.2"
+zstd = "0.13.2"

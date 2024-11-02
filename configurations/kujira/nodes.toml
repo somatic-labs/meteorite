@@ -4,16 +4,14 @@ denom = "ukuji"
 prefix = "kujira"
 gas_per_byte = 10
 base_gas = 110000
-ibc_memo = "I must politely and firmly question if anyone at Informal or Amulet ran the scripts I provided.  To avoid interruptions to ibc, I am now sending transactions down a dead(ish) channel.  It would be interesting to at this time observe chain B as well, if transactions are being relayed between them.  I'm just one person, so I don't have the capacity to provide all of the instrumentation and such that I'd like give Cosmos teams.  I think the issue goes deeper than the mempool, see Kujira.  I worked extremely hard to provide information to the relevant teams, and the commentary from them was pretty startling.  All of my emails with Amulet are at github.com/somatic-labs/hardhat.  Might be good to be a great deal more restrictive abourt aspects of transactions.  It is now my 11:52AM.  I am doing this because I do not want anyone to be able to.  The goal is NOT to distub people, or users, but instead to simply get this issue resolved.  I think it is unreasonable that this is still possible.  Also I mistakenly used the wrong channel on the first batch of transactions.  Really, I don't think that Amulet or Informal ran my scripts.  Really.  I think that I did everything I reasonably could to report this, over the course of months, and have been retaliated against by many teams for doing so.  I don't think that the patch for this belongs in the relayer, and when it comes to performance, I challenge anyone to identify a more meaningful series of events than p2p storms."
+ibc_memo = "I must politely and firmly question if anyone at Informal or Amulet ran the scripts I provided.  To avoid interruptions to ibc, I am now sending transactions down a dead(ish) channel.  It would be interesting to at this time observe chain B as well, if transactions are being relayed between them.  I'm just one person, so I don't have the capacity to provide all of the instrumentation and such that I'd like give Cosmos teams.  I think the issue goes deeper than the mempool, see Kujira.  I worked extremely hard to provide information to the relevant teams, and the commentary from them was pretty startling.  All of my emails with Amulet are at github.com/somatic-labs/meteorite.  Might be good to be a great deal more restrictive abourt aspects of transactions.  It is now my 11:52AM.  I am doing this because I do not want anyone to be able to.  The goal is NOT to distub people, or users, but instead to simply get this issue resolved.  I think it is unreasonable that this is still possible.  Also I mistakenly used the wrong channel on the first batch of transactions.  Really, I don't think that Amulet or Informal ran my scripts.  Really.  I think that I did everything I reasonably could to report this, over the course of months, and have been retaliated against by many teams for doing so.  I don't think that the patch for this belongs in the relayer, and when it comes to performance, I challenge anyone to identify a more meaningful series of events than p2p storms."
 memo = "truly I believe there are some larger issues"
 ibc_memo_repeat = 10
 rand_min = 450000
 rand_max = 450000
 revision_number = 4
-timeout_height = 21901107 
+timeout_height = 21901107
 slip44 = 118
-
-
 
 
 [gas]
@@ -22,11 +20,6 @@ precision = 4
 
 
 [nodes]
-rpc  = [
-    "http://65.109.118.35:36009",
-]
+rpc = ["http://65.109.118.35:36009"]
 
 api = "https://a-kujira--a1f4bb74a50728120e4f8c8054a8bb4c.gw.notionalapi.net"
-
-
-
