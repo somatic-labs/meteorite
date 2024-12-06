@@ -176,7 +176,10 @@ func TestAdjustBalancesWithSeedPhrase(t *testing.T) {
 	var accounts []types.Account
 	for i := 0; i < 3; i++ { // Create 3 test accounts
 		position := uint32(i)
-		privKey, pubKey, acctAddress := lib.GetPrivKey(config, mnemonic, position)
+		privKey, pubKey, acctAddress, err := lib.GetPrivKey(config, mnemonic, position)
+		if err != nil {
+			t.Fatalf("Failed to generate keys for position %d: %v", position, err)
+		}
 		accounts = append(accounts, types.Account{
 			PrivKey:  privKey,
 			PubKey:   pubKey,
