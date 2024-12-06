@@ -2,33 +2,48 @@ package lib
 
 import (
 	"fmt"
+	"strings"
 
 	types "github.com/somatic-labs/meteorite/types"
 
 	"github.com/cosmos/cosmos-sdk/crypto/hd"
 	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/cosmos/go-bip39"
 )
 
-func GetPrivKey(config types.Config, mnemonic []byte, position uint32) (cryptotypes.PrivKey, cryptotypes.PubKey, string) {
+// GetPrivKey derives a private key from a mnemonic at a specific position.
+// It now includes proper mnemonic validation and error handling.
+func GetPrivKey(config types.Config, mnemonic []byte, position uint32) (privKey cryptotypes.PrivKey, pubKey cryptotypes.PubKey, address string, err error) {
+	// Clean and validate mnemonic
+	mnemonicStr := strings.TrimSpace(string(mnemonic))
+
+	// Normalize spaces between words
+	mnemonicStr = strings.Join(strings.Fields(mnemonicStr), " ")
+
+	// Validate mnemonic
+	if !bip39.IsMnemonicValid(mnemonicStr) {
+		return nil, nil, "", fmt.Errorf("invalid mnemonic: please provide a valid BIP39 mnemonic")
+	}
+
 	algo := hd.Secp256k1
-
 	hdPath := fmt.Sprintf("m/44'/%d'/0'/0/%d", config.Slip44, position)
-	derivedPriv, err := algo.Derive()(string(mnemonic), "", hdPath)
+
+	derivedPriv, err := algo.Derive()(mnemonicStr, "", hdPath)
 	if err != nil {
-		panic(err)
+		return nil, nil, "", fmt.Errorf("failed to derive private key: %w", err)
 	}
 
-	privKey := algo.Generate()(derivedPriv)
-	pubKey := privKey.PubKey()
+	privKey = algo.Generate()(derivedPriv)
+	pubKey = privKey.PubKey()
 
-	addressbytes := sdk.AccAddress(pubKey.Address().Bytes())
-	address, err := sdk.Bech32ifyAddressBytes(config.Prefix, addressbytes)
+	addressBytes := sdk.AccAddress(pubKey.Address().Bytes())
+	address, err = sdk.Bech32ifyAddressBytes(config.Prefix, addressBytes)
 	if err != nil {
-		panic(err)
+		return nil, nil, "", fmt.Errorf("failed to generate bech32 address: %w", err)
 	}
 
-	fmt.Println("Derived Address at position", position, ":", address)
+	fmt.Printf("Derived Address at position %d: %s\n", position, address)
 
-	return privKey, pubKey, address
+	return privKey, pubKey, address, nil
 }
