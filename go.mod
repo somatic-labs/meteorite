@@ -6,7 +6,7 @@ replace github.com/cosmos/cosmos-sdk => github.com/faddat/basecoin v0.0.0-202410
 
 require (
 	github.com/BurntSushi/toml v1.4.0
-	github.com/CosmWasm/wasmd v0.53.0
+	github.com/CosmWasm/wasmd v0.53.2
 	github.com/cometbft/cometbft v0.38.15
 	github.com/cosmos/cosmos-sdk v0.50.10
 	github.com/cosmos/ibc-go/modules/apps/callbacks v0.2.1-0.20231113120333-342c00b0f8bd
@@ -24,7 +24,7 @@ require (
 	cosmossdk.io/x/evidence v0.1.1 // indirect
 	cosmossdk.io/x/feegrant v0.1.1 // indirect
 	cosmossdk.io/x/upgrade v0.1.4 // indirect
-	github.com/CosmWasm/wasmvm/v2 v2.1.2 // indirect
+	github.com/CosmWasm/wasmvm/v2 v2.1.4 // indirect
 	github.com/aws/aws-sdk-go v1.44.224 // indirect
 	github.com/bgentry/go-netrc v0.0.0-20140422174119-9fd32a8b3d3d // indirect
 	github.com/bits-and-blooms/bitset v1.14.3 // indirect
