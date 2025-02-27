@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -568,175 +569,205 @@ func checkAndAdjustBalances(accounts []types.Account, config types.Config) error
 // adjustBalances transfers funds between accounts to balance their balances within the threshold
 func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, config types.Config) error {
 	if len(accounts) == 0 {
-		return errors.New("no accounts provided for balance adjustment")
+		return nil
 	}
 
-	// Calculate the total balance
-	totalBalance := sdkmath.ZeroInt()
-	for _, balance := range balances {
-		if !balance.IsNil() {
-			totalBalance = totalBalance.Add(balance)
+	// Get sequence manager
+	seqManager := lib.GetSequenceManager()
+
+	// Calculate total and average balance
+	var totalBalance sdkmath.Int
+	validAccounts := 0
+
+	// 1. First, make sure we have valid balances for all accounts
+	for _, account := range accounts {
+		balance, ok := balances[account.Address]
+		if !ok || balance.IsNil() {
+			continue
 		}
-	}
-	fmt.Printf("Total Balance across all accounts: %s %s\n", totalBalance.String(), config.Denom)
-
-	if totalBalance.IsZero() {
-		return errors.New("total balance is zero, nothing to adjust")
+		totalBalance = totalBalance.Add(balance)
+		validAccounts++
 	}
 
-	// Count valid accounts (with non-nil balances)
-	validAccountCount := 0
-	for _, balance := range balances {
-		if !balance.IsNil() && !balance.IsZero() {
-			validAccountCount++
-		}
+	if validAccounts == 0 {
+		return fmt.Errorf("no valid balances found")
 	}
 
-	// If no valid accounts with balances, we can't proceed
-	if validAccountCount == 0 {
-		return errors.New("no accounts with valid balances found")
-	}
+	avgBalance := totalBalance.Quo(sdkmath.NewInt(int64(validAccounts)))
+	minTransferAmount := sdkmath.NewInt(1000000) // 1 token in smallest denomination to avoid dust transfers
 
-	numAccounts := sdkmath.NewInt(int64(len(accounts)))
-	averageBalance := totalBalance.Quo(numAccounts)
-	fmt.Printf("Number of Accounts: %d, Average Balance per account: %s %s\n",
-		numAccounts.Int64(), averageBalance.String(), config.Denom)
+	// Print balancing information
+	fmt.Printf("Total balance: %s %s\n", totalBalance.String(), config.Denom)
+	fmt.Printf("Average balance: %s %s\n", avgBalance.String(), config.Denom)
+	fmt.Printf("Minimum transfer amount: %s %s\n", minTransferAmount.String(), config.Denom)
 
-	// Define minimum transfer amount to avoid dust transfers
-	minTransfer := sdkmath.NewInt(1000000) // Adjust based on your token's decimal places
-	fmt.Printf("Minimum Transfer Amount to avoid dust: %s %s\n", minTransfer.String(), config.Denom)
-
-	// Create a slice to track balances that need to send or receive funds
+	// 2. Calculate required adjustments
 	type balanceAdjustment struct {
 		Account types.Account
 		Amount  sdkmath.Int // Positive if needs to receive, negative if needs to send
 	}
+
 	var adjustments []balanceAdjustment
-
-	threshold := averageBalance.MulRaw(10).QuoRaw(100) // threshold = averageBalance * 10 / 100
-	fmt.Printf("Balance Threshold for adjustments (10%% of average balance): %s %s\n", threshold.String(), config.Denom)
-
-	for _, acct := range accounts {
-		currentBalance := balances[acct.Address]
-		// Skip accounts with nil balances
-		if currentBalance.IsNil() {
-			fmt.Printf("Account %s has nil balance, skipping\n", acct.Address)
+	for _, account := range accounts {
+		balance, ok := balances[account.Address]
+		if !ok || balance.IsNil() {
 			continue
 		}
 
-		difference := averageBalance.Sub(currentBalance)
-
-		fmt.Printf("Account %s - Current Balance: %s %s, Difference from average: %s %s\n",
-			acct.Address, currentBalance.String(), config.Denom, difference.String(), config.Denom)
-
-		// Only consider adjustments exceeding the threshold and minimum transfer amount
-		if difference.Abs().GT(threshold) && difference.Abs().GT(minTransfer) {
-			adjustments = append(adjustments, balanceAdjustment{
-				Account: acct,
-				Amount:  difference,
-			})
-			fmt.Printf("-> Account %s requires adjustment of %s %s\n", acct.Address, difference.String(), config.Denom)
-		} else {
-			fmt.Printf("-> Account %s is within balance threshold, no adjustment needed\n", acct.Address)
+		// Calculate how much this account is off from the average
+		diff := avgBalance.Sub(balance)
+		if diff.Abs().LT(minTransferAmount) {
+			// Skip if difference is too small to bother with
+			continue
 		}
+
+		adjustments = append(adjustments, balanceAdjustment{
+			Account: account,
+			Amount:  diff,
+		})
 	}
 
-	// Separate adjustments into senders (negative amounts) and receivers (positive amounts)
-	var senders, receivers []balanceAdjustment
+	if len(adjustments) == 0 {
+		fmt.Println("All account balances are already within threshold - no adjustments needed")
+		return nil
+	}
+
+	// 3. Sort adjustments - senders first (negative amounts), then receivers (positive amounts)
+	sort.Slice(adjustments, func(i, j int) bool {
+		// If one is negative and one is positive, negative comes first
+		if adjustments[i].Amount.IsNegative() != adjustments[j].Amount.IsNegative() {
+			return adjustments[i].Amount.IsNegative()
+		}
+		// Otherwise sort by absolute amount (largest first)
+		return adjustments[i].Amount.Abs().GT(adjustments[j].Amount.Abs())
+	})
+
+	// 4. Prepare sequences for all accounts that will send funds
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Find all sender accounts
+	var senderAccounts []types.Account
 	for _, adj := range adjustments {
 		if adj.Amount.IsNegative() {
-			// Check if the account has enough balance to send
-			accountBalance := balances[adj.Account.Address]
-			fmt.Printf("Sender Account %s - Balance: %s %s, Surplus: %s %s\n",
-				adj.Account.Address, accountBalance.String(), config.Denom, adj.Amount.Abs().String(), config.Denom)
-
-			// Ensure account has enough balance to send
-			if accountBalance.GT(adj.Amount.Abs()) {
-				senders = append(senders, adj)
-			} else {
-				fmt.Printf("-> Account %s doesn't have enough balance to be a sender\n", adj.Account.Address)
-			}
-		} else if adj.Amount.IsPositive() {
-			fmt.Printf("Receiver Account %s - Needs: %s %s\n",
-				adj.Account.Address, adj.Amount.String(), config.Denom)
-			receivers = append(receivers, adj)
+			senderAccounts = append(senderAccounts, adj.Account)
 		}
 	}
+
+	// Prefetch all sequences in parallel
+	if err := seqManager.PrefetchAllSequences(ctx, senderAccounts, config); err != nil {
+		fmt.Printf("Warning: Failed to prefetch some sequences: %v\n", err)
+	}
+
+	// 5. Execute transfers
+	fmt.Printf("Executing %d transfers to balance accounts...\n", len(adjustments)/2)
+
+	transferCount := 0
+	senderIdx := 0
+	receiverIdx := len(adjustments) - 1
 
 	// Perform transfers from senders to receivers
-	for _, sender := range senders {
-		// The total amount the sender needs to transfer (their surplus)
-		amountToSend := sender.Amount.Abs()
-		fmt.Printf("\nStarting transfers from Sender Account %s - Total Surplus to send: %s %s\n",
-			sender.Account.Address, amountToSend.String(), config.Denom)
+	for senderIdx < receiverIdx {
+		sender := adjustments[senderIdx]
+		receiver := adjustments[receiverIdx]
 
-		// Iterate over the receivers who need funds
-		for i := range receivers {
-			receiver := &receivers[i]
+		if !sender.Amount.IsNegative() || !receiver.Amount.IsPositive() {
+			break
+		}
 
-			// Check if the receiver still needs funds
-			if receiver.Amount.GT(sdkmath.ZeroInt()) {
-				// Determine the amount to transfer:
-				// It's the minimum of what the sender can send and what the receiver needs
-				transferAmount := sdkmath.MinInt(amountToSend, receiver.Amount)
+		// How much can this sender send (the amount it has above average)
+		toSend := sender.Amount.Neg()
+		// How much does the receiver need
+		toReceive := receiver.Amount
 
-				fmt.Printf("Transferring %s %s from %s to %s\n",
-					transferAmount.String(), config.Denom, sender.Account.Address, receiver.Account.Address)
-
-				// Transfer funds from the sender to the receiver
-				err := TransferFunds(sender.Account, receiver.Account.Address, transferAmount, config)
-				if err != nil {
-					return fmt.Errorf("failed to transfer funds from %s to %s: %v",
-						sender.Account.Address, receiver.Account.Address, err)
-				}
-
-				fmt.Printf("-> Successfully transferred %s %s from %s to %s\n",
-					transferAmount.String(), config.Denom, sender.Account.Address, receiver.Account.Address)
-
-				// Update the sender's remaining amount to send
-				amountToSend = amountToSend.Sub(transferAmount)
-				fmt.Printf("Sender %s remaining surplus to send: %s %s\n",
-					sender.Account.Address, amountToSend.String(), config.Denom)
-
-				// Update the receiver's remaining amount to receive
-				receiver.Amount = receiver.Amount.Sub(transferAmount)
-				fmt.Printf("Receiver %s remaining amount needed: %s %s\n",
-					receiver.Account.Address, receiver.Amount.String(), config.Denom)
-
-				// If the sender has sent all their surplus, move to the next sender
-				if amountToSend.IsZero() {
-					fmt.Printf("Sender %s has sent all surplus funds.\n", sender.Account.Address)
-					break
-				}
-			} else {
-				fmt.Printf("Receiver %s no longer needs funds.\n", receiver.Account.Address)
+		// Determine the transfer amount (minimum of what sender can send and receiver needs)
+		transferAmount := sdkmath.MinInt(toSend, toReceive)
+		if transferAmount.LT(minTransferAmount) {
+			// Skip if transfer amount is too small
+			if sender.Amount.IsNegative() {
+				senderIdx++
 			}
+			if receiver.Amount.IsPositive() {
+				receiverIdx--
+			}
+			continue
+		}
+
+		fmt.Printf("Transferring %s %s from %s to %s\n",
+			transferAmount.String(), config.Denom, sender.Account.Address, receiver.Account.Address)
+
+		// Execute the transfer
+		err := TransferFunds(sender.Account, receiver.Account.Address, transferAmount, config)
+		if err != nil {
+			fmt.Printf("Error transferring funds: %v\n", err)
+			// Refresh balances and try again later if there's an error
+			return fmt.Errorf("failed to execute transfer during balance adjustment: %w", err)
+		}
+
+		transferCount++
+
+		// Update remaining amounts
+		adjustments[senderIdx].Amount = adjustments[senderIdx].Amount.Add(transferAmount)
+		adjustments[receiverIdx].Amount = adjustments[receiverIdx].Amount.Sub(transferAmount)
+
+		// Move to next sender if this one is done
+		if adjustments[senderIdx].Amount.Abs().LT(minTransferAmount) {
+			senderIdx++
+		}
+
+		// Move to next receiver if this one is done
+		if adjustments[receiverIdx].Amount.Abs().LT(minTransferAmount) {
+			receiverIdx--
 		}
 	}
 
-	fmt.Println("\nBalance adjustment complete.")
+	fmt.Printf("Balance adjustment completed: %d transfers executed\n", transferCount)
+
+	// Get updated balances
+	updatedBalances, err := lib.GetBalances(accounts, config)
+	if err != nil {
+		return fmt.Errorf("failed to get updated balances: %w", err)
+	}
+
+	// Check if balances are now within threshold
+	within := lib.CheckBalancesWithinThreshold(updatedBalances, 0.1) // 10% threshold
+	if !within {
+		return fmt.Errorf("failed to balance accounts within threshold after transfers")
+	}
+
 	return nil
 }
 
-// TransferFunds transfers funds from a sender account to a receiver address
+// TransferFunds transfers funds from sender to receiver and handles retries and sequence management
 func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.Int, config types.Config) error {
-	// Get sequence and account number
-	seq, accNum, err := lib.GetAccountInfo(sender.Address, config)
+	// Get sequence manager
+	seqManager := lib.GetSequenceManager()
+
+	// Get latest sequence from our manager (will fetch from chain if needed)
+	sequence, err := seqManager.GetSequence(sender.Address, config, false)
 	if err != nil {
-		return fmt.Errorf("failed to get account info: %v", err)
+		log.Printf("Failed to get sequence for %s: %v", sender.Address, err)
+		return err
 	}
 
-	// Create a transaction params struct for the funds transfer
+	// Get account number (still needed)
+	_, accNum, err := lib.GetAccountInfo(sender.Address, config)
+	if err != nil {
+		log.Printf("Failed to get account number for %s: %v", sender.Address, err)
+		return err
+	}
+
+	// Set up transaction parameters
 	txParams := types.TransactionParams{
 		Config:      config,
-		NodeURL:     config.Nodes.RPC[0],
-		ChainID:     config.Chain,
-		Sequence:    seq,
+		NodeURL:     config.Nodes.RPC[0], // Use the first RPC node
+		ChainID:     config.Chain,        // Use Chain field instead of ChainID
+		Sequence:    sequence,
 		AccNum:      accNum,
 		PrivKey:     sender.PrivKey,
 		PubKey:      sender.PubKey,
 		AcctAddress: sender.Address,
-		MsgType:     "bank_send",
+		MsgType:     "bank_send", // Use correct message type name
 		MsgParams: map[string]interface{}{
 			"from_address": sender.Address,
 			"to_address":   receiverAddress,
@@ -745,62 +776,101 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Create a context with timeout for transaction
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	maxRetries := 3
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		fmt.Printf("Attempt %d to send transaction with sequence %d\n", attempt+1, txParams.Sequence)
+	// Maximum number of retry attempts
+	maxRetries := 5
+	// Initial backoff duration (will be doubled on each retry)
+	backoff := 2 * time.Second
 
-		// Create GRPC client with proper error handling
+	// Attempt to send the transaction with retries
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		// For attempts after the first, we'll force a refresh of the sequence
+		if attempt > 1 {
+			// Refresh sequence from chain
+			newSequence, err := seqManager.GetSequence(sender.Address, config, true)
+			if err != nil {
+				log.Printf("Failed to refresh sequence for %s: %v", sender.Address, err)
+				return err
+			}
+			txParams.Sequence = newSequence
+
+			// Increase gas price for retry attempts
+			increaseFactor := 1.0 + float64(attempt-1)*0.2
+			txParams.Config.Gas.Low = int64(float64(config.Gas.Low) * increaseFactor)
+			log.Printf("Retry attempt %d: Using sequence %d with gas price %d",
+				attempt, txParams.Sequence, txParams.Config.Gas.Low)
+		}
+
+		// Create GRPC client
 		grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
 		if err != nil {
-			fmt.Printf("Failed to create GRPC client: %v\n", err)
-			continue
+			log.Printf("Failed to create GRPC client: %v", err)
+			return err
 		}
 
-		// Create a modified version of the config with a higher base gas to avoid simulation issues
-		modifiedConfig := config
-		modifiedConfig.BaseGas = 200000 // Set a reasonable default gas value
-		txParams.Config = modifiedConfig
-
+		// Send the transaction
 		resp, _, err := broadcast.SendTransactionViaGRPC(ctx, txParams, txParams.Sequence, grpcClient)
-		if err != nil {
-			fmt.Printf("Transaction failed: %v\n", err)
 
-			// Check if the error is a sequence mismatch error
-			if resp != nil && resp.Code == 32 {
-				expectedSeq, parseErr := lib.ExtractExpectedSequence(resp.RawLog)
-				if parseErr == nil {
-					// Update sequence and retry
-					txParams.Sequence = expectedSeq
-					fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", expectedSeq)
+		if err == nil && (resp == nil || resp.Code == 0) {
+			// Transaction successful
+			log.Printf("Successfully transferred %s%s from %s to %s. Tx hash: %s",
+				amount.String(), config.Denom, sender.Address, receiverAddress, resp.TxHash)
+
+			// Update sequence in our manager
+			seqManager.SetSequence(sender.Address, txParams.Sequence+1)
+			return nil
+		}
+
+		// Handle errors
+		if err != nil {
+			// Check if the error is due to sequence mismatch
+			if strings.Contains(err.Error(), "account sequence mismatch") {
+				// Extract correct sequence from error
+				newSeq, updated := seqManager.UpdateFromError(sender.Address, err.Error())
+				if updated {
+					log.Printf("Account sequence mismatch for %s. Updated to %d", sender.Address, newSeq)
+					// Don't sleep, retry immediately with correct sequence
+					continue
+				} else {
+					// Wait a bit and retry with refreshed sequence from chain
+					log.Printf("Account sequence mismatch for %s. Will refresh from chain.", sender.Address)
+					time.Sleep(backoff)
+					backoff *= 2 // Increase backoff for next retry
 					continue
 				}
+			} else if strings.Contains(err.Error(), "insufficient fee") {
+				// Insufficient fee error - retry with higher fee
+				log.Printf("Insufficient fee detected. Retrying with higher fee.")
+				time.Sleep(backoff)
+				backoff *= 2 // Increase backoff for next retry
+				continue
+			} else {
+				// Other errors
+				log.Printf("Failed to send transaction from %s to %s: %v", sender.Address, receiverAddress, err)
+				return err
 			}
-			continue
 		}
 
-		if resp.Code != 0 {
-			fmt.Printf("Transaction failed with code %d: %s\n", resp.Code, resp.RawLog)
-
-			// Check for sequence mismatch error
-			if resp.Code == 32 {
-				expectedSeq, parseErr := lib.ExtractExpectedSequence(resp.RawLog)
-				if parseErr == nil {
-					// Update sequence and retry
-					txParams.Sequence = expectedSeq
-					fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", expectedSeq)
+		// Check for transaction failure
+		if resp != nil && resp.Code != 0 {
+			if strings.Contains(resp.RawLog, "insufficient fee") {
+				log.Printf("Transaction failed with insufficient fee. Retrying with higher fee.")
+				time.Sleep(backoff)
+				backoff *= 2
+				continue
+			} else if strings.Contains(resp.RawLog, "account sequence mismatch") {
+				// Extract correct sequence from response
+				newSeq, updated := seqManager.UpdateFromError(sender.Address, resp.RawLog)
+				if updated {
+					log.Printf("Account sequence mismatch in response. Updated to %d", newSeq)
 					continue
 				}
 			}
 			return fmt.Errorf("transaction failed with code %d: %s", resp.Code, resp.RawLog)
 		}
-
-		// Successfully broadcasted transaction
-		fmt.Printf("-> Successfully transferred %s %s from %s to %s\n",
-			amount.String(), config.Denom, sender.Address, receiverAddress)
-		return nil
 	}
 
 	return fmt.Errorf("failed to send transaction after %d attempts", maxRetries)

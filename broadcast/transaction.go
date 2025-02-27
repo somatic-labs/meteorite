@@ -33,6 +33,12 @@ const (
 
 // BuildTransaction builds a transaction from the provided parameters
 func BuildTransaction(ctx context.Context, txParams *types.TxParams) ([]byte, error) {
+	// Print verbose logs to help debug transaction issues
+	fmt.Printf("Building transaction with params: MsgType=%s\n",
+		txParams.MsgType)
+	fmt.Printf("Gas settings: Low=%d, BaseGas=%d, Denom=%s\n",
+		txParams.Config.Gas.Low, txParams.Config.BaseGas, txParams.Config.Denom)
+
 	// Validate the transaction parameters
 	if err := ValidateTxParams(txParams); err != nil {
 		return nil, err
@@ -396,11 +402,25 @@ func BuildAndSignTransaction(
 	txBuilder.SetGasLimit(gasLimit)
 
 	// Set fee
-	gasPrice := strconv.FormatInt(txParams.Config.Gas.Low, 10)
-	fee, err := sdk.ParseCoinsNormalized(fmt.Sprintf("%s%s", gasPrice, txParams.Config.Denom))
+	gasPrice := txParams.Config.Gas.Low
+	// Calculate fee as gasPrice (minimum fee required by the chain)
+	// Most chains require a minimum fee regardless of gas calculation
+	feeAmount := gasPrice
+
+	// Ensure fee is at least the minimum required (usually matching gasPrice)
+	if feeAmount < 200 {
+		// Many chains require at least 200 tokens as minimum fee
+		feeAmount = 200
+	}
+
+	feeCoin := fmt.Sprintf("%d%s", feeAmount, txParams.Config.Denom)
+	fee, err := sdk.ParseCoinsNormalized(feeCoin)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse fee: %w", err)
 	}
+
+	fmt.Printf("Setting transaction fee: %s (gas limit: %d, gas price: %d)\n",
+		fee.String(), gasLimit, gasPrice)
 	txBuilder.SetFeeAmount(fee)
 
 	// Set memo if provided
