@@ -269,7 +269,7 @@ func TestRPCEndpoint(endpoint string) (bool, error) {
 	defer cancel()
 
 	// Create request
-	req, err := http.NewRequestWithContext(ctx, "GET", endpoint+"status", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"status", nil)
 	if err != nil {
 		return false, fmt.Errorf("error creating request: %w", err)
 	}

@@ -2,6 +2,7 @@ package chainregistry
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -19,7 +20,7 @@ func SelectChainInteractive(registry *Registry) (*ChainSelection, error) {
 	chains := registry.GetChains()
 
 	if len(chains) == 0 {
-		return nil, fmt.Errorf("no chains found in registry")
+		return nil, errors.New("no chains found in registry")
 	}
 
 	// Print chains with their index
@@ -46,7 +47,7 @@ func SelectChainInteractive(registry *Registry) (*ChainSelection, error) {
 
 		input = strings.TrimSpace(input)
 		if input == "q" || input == "quit" || input == "exit" {
-			return nil, fmt.Errorf("user canceled chain selection")
+			return nil, errors.New("user canceled chain selection")
 		}
 
 		index, err := strconv.Atoi(input)
@@ -64,11 +65,11 @@ func SelectChainInteractive(registry *Registry) (*ChainSelection, error) {
 
 	// Check chain prerequisites
 	if len(selectedChain.APIs.RPC) == 0 {
-		return nil, fmt.Errorf("selected chain has no RPC endpoints defined")
+		return nil, errors.New("selected chain has no RPC endpoints defined")
 	}
 
 	if len(selectedChain.Fees.FeeTokens) == 0 {
-		return nil, fmt.Errorf("selected chain has no fee tokens defined")
+		return nil, errors.New("selected chain has no fee tokens defined")
 	}
 
 	// Find open RPC endpoints

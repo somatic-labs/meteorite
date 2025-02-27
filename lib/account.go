@@ -2,10 +2,10 @@ package lib
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
-	"math/rand"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 )
@@ -43,13 +43,13 @@ func GetRandomBytes(n int) ([]byte, error) {
 	return bytes, nil
 }
 
-// RandomInt64 generates a random int64 between min and max (inclusive)
-func RandomInt64(min, max int64) int64 {
-	if min == max {
-		return min
+// RandomInt64 generates a random int64 between minVal and maxVal (inclusive)
+func RandomInt64(minVal, maxVal int64) int64 {
+	if minVal == maxVal {
+		return minVal
 	}
-	if min > max {
-		min, max = max, min
+	if minVal > maxVal {
+		minVal, maxVal = maxVal, minVal
 	}
 	// Generate random bytes
 	bytes, _ := GetRandomBytes(8)
@@ -59,16 +59,16 @@ func RandomInt64(min, max int64) int64 {
 		r = -r
 	}
 	// Adjust to range
-	return min + (r % (max - min + 1))
+	return minVal + (r % (maxVal - minVal + 1))
 }
 
-// RandomInt32 generates a random int32 between min and max (inclusive)
-func RandomInt32(min, max int32) int32 {
-	if min == max {
-		return min
+// RandomInt32 generates a random int32 between minVal and maxVal (inclusive)
+func RandomInt32(minVal, maxVal int32) int32 {
+	if minVal == maxVal {
+		return minVal
 	}
-	if min > max {
-		min, max = max, min
+	if minVal > maxVal {
+		minVal, maxVal = maxVal, minVal
 	}
 	// Generate random bytes
 	bytes, _ := GetRandomBytes(4)
@@ -78,5 +78,5 @@ func RandomInt32(min, max int32) int32 {
 		r = -r
 	}
 	// Adjust to range
-	return min + (r % (max - min + 1))
+	return minVal + (r % (maxVal - minVal + 1))
 }

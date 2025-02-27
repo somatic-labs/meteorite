@@ -88,21 +88,23 @@ func (m *MultiSendDistributor) CreateDistributedMultiSendMsg(
 
 	for i := 0; i < numRecipients; i++ {
 		var toAccAddress sdk.AccAddress
+		var err error
 
-		// Use the specified recipient if provided, otherwise generate random accounts
+		// Generate a deterministic seed for this recipient
+		randomSeed := fmt.Sprintf("%d-%d", seed, i)
+
+		// Try to use the specified recipient if provided
 		if msgParams.ToAddress != "" {
 			toAccAddress, err = sdk.AccAddressFromBech32(msgParams.ToAddress)
+			// If address is invalid, fall back to deterministic generation
 			if err != nil {
-				// Generate a deterministic account based on seed and index
-				randomSeed := fmt.Sprintf("%d-%d", seed, i)
 				toAccAddress, err = lib.GenerateDeterministicAccount(randomSeed)
 				if err != nil {
 					return nil, "", fmt.Errorf("error generating deterministic account: %w", err)
 				}
 			}
 		} else {
-			// Generate a deterministic account based on seed and index
-			randomSeed := fmt.Sprintf("%d-%d", seed, i)
+			// No address specified, generate a deterministic one
 			toAccAddress, err = lib.GenerateDeterministicAccount(randomSeed)
 			if err != nil {
 				return nil, "", fmt.Errorf("error generating deterministic account: %w", err)

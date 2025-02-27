@@ -1,6 +1,7 @@
 package lib
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -23,7 +24,7 @@ func GetPrivKey(config types.Config, mnemonic []byte, position uint32) (privKey 
 
 	// Validate mnemonic
 	if !bip39.IsMnemonicValid(mnemonicStr) {
-		return nil, nil, "", fmt.Errorf("invalid mnemonic: please provide a valid BIP39 mnemonic")
+		return nil, nil, "", errors.New("invalid mnemonic: please provide a valid BIP39 mnemonic")
 	}
 
 	algo := hd.Secp256k1

@@ -75,9 +75,16 @@ func RunRegistryMode() error {
 	defer f.Close()
 
 	// Write header comment
-	f.WriteString(fmt.Sprintf("# Meteorite configuration for %s (%s)\n",
+	_, err = f.WriteString(fmt.Sprintf("# Meteorite configuration for %s (%s)\n",
 		selection.Chain.PrettyName, selection.Chain.ChainName))
-	f.WriteString("# Generated from the Cosmos Chain Registry\n\n")
+	if err != nil {
+		return fmt.Errorf("error writing to config file: %w", err)
+	}
+
+	_, err = f.WriteString("# Generated from the Cosmos Chain Registry\n\n")
+	if err != nil {
+		return fmt.Errorf("error writing to config file: %w", err)
+	}
 
 	// Format the RPC endpoints array for TOML
 	rpcs := config["nodes"].(map[string]interface{})["rpc"].([]string)

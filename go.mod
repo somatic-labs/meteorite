@@ -1,6 +1,6 @@
 module github.com/somatic-labs/meteorite
 
-go 1.23.1
+go 1.24
 
 replace github.com/cosmos/cosmos-sdk => github.com/faddat/basecoin v0.0.0-20241004182125-2b3e8f61430f
 
@@ -12,7 +12,6 @@ require (
 	github.com/cosmos/ibc-go/modules/apps/callbacks v0.2.1-0.20231113120333-342c00b0f8bd
 	github.com/cosmos/ibc-go/v8 v8.5.1
 	github.com/go-git/go-git/v5 v5.13.2
-
 )
 
 require (
@@ -194,7 +193,7 @@ require (
 	github.com/sourcegraph/conc v0.3.0 // indirect
 	github.com/spf13/afero v1.11.0 // indirect
 	github.com/spf13/cast v1.7.0 // indirect
-	github.com/spf13/cobra v1.8.1 // indirect
+	github.com/spf13/cobra v1.8.1
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/spf13/viper v1.19.0 // indirect
 	github.com/stretchr/testify v1.10.0 // indirect
@@ -232,5 +231,4 @@ replace (
 	golang.org/x/exp => golang.org/x/exp v0.0.0-20230711153332-06a737ee72cb
 	// stick with compatible version of rapid in v0.47.x line
 	pgregory.net/rapid => pgregory.net/rapid v0.5.5
-
 )

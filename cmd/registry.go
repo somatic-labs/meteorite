@@ -19,7 +19,7 @@ This command allows you to:
 - Test all available RPC endpoints
 - Generate a configuration file for testing
 - Run tests using multiple RPCs with different multisend transactions`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		fmt.Println("Meteorite Chain Registry Tester")
 		fmt.Println("==============================")
 
@@ -58,7 +58,7 @@ This command allows you to:
 
 		// Save config to file
 		fmt.Println("\nGenerating configuration file...")
-		configFilename := fmt.Sprintf("%s.toml", selection.Chain.ChainName)
+		configFilename := selection.Chain.ChainName + ".toml"
 
 		// Check if file exists
 		if _, err := os.Stat(configFilename); err == nil {
@@ -81,9 +81,18 @@ This command allows you to:
 		defer f.Close()
 
 		// Write header comment
-		f.WriteString(fmt.Sprintf("# Meteorite configuration for %s (%s)\n",
+		_, err = f.WriteString(fmt.Sprintf("# Meteorite configuration for %s (%s)\n",
 			selection.Chain.PrettyName, selection.Chain.ChainName))
-		f.WriteString("# Generated from the Cosmos Chain Registry\n\n")
+		if err != nil {
+			fmt.Printf("Error writing to config file: %v\n", err)
+			os.Exit(1)
+		}
+
+		_, err = f.WriteString("# Generated from the Cosmos Chain Registry\n\n")
+		if err != nil {
+			fmt.Printf("Error writing to config file: %v\n", err)
+			os.Exit(1)
+		}
 
 		// Encode config
 		encoder := toml.NewEncoder(f)
