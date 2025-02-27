@@ -122,6 +122,7 @@ type Config struct {
 	Channel        string      `toml:"channel"`
 	Denom          string      `toml:"denom"`
 	Prefix         string      `toml:"prefix"`
+	AccountPrefix  string      `toml:"account_prefix"` // Bech32 prefix for account addresses (e.g., "cosmos", "osmo", etc.)
 	GasPerByte     int64       `toml:"gas_per_byte"`
 	BaseGas        int64       `toml:"base_gas"`
 	IbCMemo        string      `toml:"ibc_memo"`
