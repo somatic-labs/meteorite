@@ -24,9 +24,14 @@ import (
 )
 
 const (
-	BatchSize                  = 100000000
+	SeedphraseFile             = "seedphrase"
+	BalanceThreshold           = 0.05
+	BatchSize                  = 1000
 	TimeoutDuration            = 50 * time.Millisecond
 	DefaultMultisendRecipients = 3000 // Always use 3000 recipients per multisend
+	MaxVisualizer              = 3600
+	DefaultVisualizerRefreshMs = 1000
+	DefaultGoroutinePoolSize   = 20
 )
 
 func main() {

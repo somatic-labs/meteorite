@@ -207,6 +207,17 @@ func GenerateDeterministicAccount(seed string) (sdk.AccAddress, string, error) {
 		hashedBytes = hash(hashedBytes)
 	}
 
+	// Ensure we have at least 20 bytes
+	if len(hashedBytes) < 20 {
+		// If we don't have enough bytes, pad with zeros or repeat the hash
+		paddedBytes := make([]byte, 20)
+		copy(paddedBytes, hashedBytes)
+		for i := len(hashedBytes); i < 20; i++ {
+			paddedBytes[i] = 0
+		}
+		hashedBytes = paddedBytes
+	}
+
 	// Use the first 20 bytes for the address
 	addressBytes := hashedBytes[:20]
 	address := sdk.AccAddress(addressBytes)

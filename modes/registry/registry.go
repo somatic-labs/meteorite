@@ -26,7 +26,9 @@ import (
 )
 
 const (
-	BatchSize        = 100000000
+	SeedphraseFile   = "seedphrase"
+	BalanceThreshold = 0.05
+	BatchSize        = 1000
 	TimeoutDuration  = 50 * time.Millisecond
 	MsgBankMultisend = "bank_multisend"
 )
@@ -598,7 +600,7 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 	}
 
 	if validAccounts == 0 {
-		return fmt.Errorf("no valid balances found")
+		return errors.New("no valid balances found")
 	}
 
 	// Double check that we have a valid total balance before continuing
@@ -770,7 +772,7 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 	// Check if balances are now within threshold
 	within := lib.CheckBalancesWithinThreshold(updatedBalances, 0.1) // 10% threshold
 	if !within {
-		return fmt.Errorf("failed to balance accounts within threshold after transfers")
+		return errors.New("failed to balance accounts within threshold after transfers")
 	}
 
 	return nil
@@ -815,7 +817,8 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 	}
 
 	// Create a context with timeout for transaction
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Increase timeout from 60 seconds to 120 seconds to prevent context deadline exceeded errors
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	// Maximum number of retry attempts
@@ -956,8 +959,9 @@ func shouldProceedWithBalances(balances map[string]sdkmath.Int) bool {
 func initializeDistributor(config types.Config, enableViz bool) *bankmodule.MultiSendDistributor {
 	var distributor *bankmodule.MultiSendDistributor
 
-	// Create a multisend distributor if needed
-	if config.MsgType == MsgBankMultisend && config.Multisend {
+	// Create a multisend distributor if multisend is enabled, regardless of initial message type
+	// This allows the prepareTransactionParams function to switch to multisend mode
+	if config.Multisend {
 		// Initialize the distributor with RPC endpoints from config
 		distributor = bankmodule.NewMultiSendDistributor(config, config.Nodes.RPC)
 		fmt.Printf("📡 Initialized MultiSendDistributor with %d RPC endpoints\n", len(config.Nodes.RPC))
@@ -1067,6 +1071,11 @@ func prepareTransactionParams(
 	// Explicitly set the from_address to the account's address
 	// This ensures it's always set correctly even if not present in config.MsgParams
 	msgParamsMap["from_address"] = acct.Address
+
+	// Add distributor to msgParams for multisend operations
+	if distributor != nil && txMsgType == MsgBankMultisend {
+		msgParamsMap["distributor"] = distributor
+	}
 
 	return types.TransactionParams{
 		Config:      config,

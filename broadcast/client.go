@@ -3,6 +3,7 @@ package broadcast
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -51,15 +52,23 @@ func GetClient(rpcEndpoint string) (*Client, error) {
 }
 
 func (b *Client) Transaction(txBytes []byte) (*coretypes.ResultBroadcastTx, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	// Increase timeout to 60 seconds for large multisend transactions
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	t := tmtypes.Tx(txBytes)
+
+	// Use BroadcastTxSync as it provides immediate feedback on transaction validity
 	res, err := b.client.BroadcastTxSync(ctx, t)
 	if err != nil {
+		// Check for specific error types
+		if strings.Contains(err.Error(), "timed out") {
+			return nil, fmt.Errorf("broadcast timed out (transaction may still be processed): %w", err)
+		}
 		return nil, err
 	}
 
+	// For non-zero response codes, return the response with error details
 	if res.Code != 0 {
 		return res, fmt.Errorf("broadcast error code %d: %s", res.Code, res.Log)
 	}

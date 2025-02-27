@@ -1,6 +1,7 @@
 package broadcast
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -93,7 +94,7 @@ func Loop(
 
 		metrics.SignStart = time.Now()
 		metrics.BroadStart = time.Now()
-		resp, _, err := SendTransactionViaRPC(txParams, currentSequence)
+		resp, _, err := SendTransactionViaRPC(context.Background(), txParams, currentSequence)
 		metrics.Complete = time.Now()
 
 		// Calculate total transaction time for visualization
@@ -155,7 +156,7 @@ func handleSequenceMismatch(txParams types.TransactionParams, position int, sequ
 
 	metrics.SignStart = time.Now()
 	metrics.BroadStart = time.Now()
-	resp, _, err := SendTransactionViaRPC(txParams, expectedSeq)
+	resp, _, err := SendTransactionViaRPC(context.Background(), txParams, expectedSeq)
 	metrics.Complete = time.Now()
 
 	if err != nil {

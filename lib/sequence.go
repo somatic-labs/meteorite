@@ -41,7 +41,7 @@ func GetSequenceManager() *SequenceManager {
 func (sm *SequenceManager) GetSequence(address string, config types.Config, forceRefresh bool) (uint64, error) {
 	sm.mutex.RLock()
 	seq, exists := sm.sequences[address]
-	lastRefresh, _ := sm.refreshTimes[address]
+	lastRefresh := sm.refreshTimes[address]
 	sm.mutex.RUnlock()
 
 	// Determine if we need to refresh from chain
@@ -87,7 +87,7 @@ func (sm *SequenceManager) SetSequence(address string, sequence uint64) {
 
 // UpdateFromError updates the sequence based on a sequence mismatch error
 // It parses the error message to extract the expected sequence
-func (sm *SequenceManager) UpdateFromError(address string, errMsg string) (uint64, bool) {
+func (sm *SequenceManager) UpdateFromError(address, errMsg string) (uint64, bool) {
 	expectedSeq, err := ExtractExpectedSequence(errMsg)
 	if err != nil {
 		return 0, false

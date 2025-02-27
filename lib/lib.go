@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,7 +29,7 @@ import (
 )
 
 var httpClient = &http.Client{
-	Timeout: 10 * time.Second, // Adjusted timeout to 10 seconds
+	Timeout: 30 * time.Second, // Adjusted timeout to 30 seconds
 	Transport: &http.Transport{
 		MaxIdleConns:        100,              // Increased maximum idle connections
 		MaxIdleConnsPerHost: 10,               // Increased maximum idle connections per host
@@ -155,7 +156,7 @@ func GetChainID(nodeURL string) (string, error) {
 }
 
 func HTTPGet(url string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	log.Printf("Sending HTTP GET request to: %s", url)
@@ -206,7 +207,7 @@ func HTTPGet(url string) ([]byte, error) {
 	// Check for empty responses
 	if len(body) == 0 {
 		log.Printf("Warning: Empty response body from %s after %v", url, requestDuration)
-		return nil, fmt.Errorf("empty response body")
+		return nil, errors.New("empty response body")
 	}
 
 	// Debug: Log content type, response size and timing
@@ -390,7 +391,7 @@ func GetAccountBalance(address string, config types.Config) (sdkmath.Int, error)
 	log.Printf("Fetching balance from API: %s", apiUrl)
 
 	// Create a context with timeout for the HTTP request
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Create a request with context
@@ -540,7 +541,7 @@ func GetSharedHTTPClient() *http.Client {
 		}
 
 		sharedHTTPClient = &http.Client{
-			Timeout:   15 * time.Second, // Overall timeout for requests
+			Timeout:   30 * time.Second, // Overall timeout for requests
 			Transport: transport,
 		}
 	})
@@ -622,7 +623,7 @@ func parseAlternativeBalanceFormat(data []byte, targetDenom string) (sdkmath.Int
 		}
 	}
 
-	return sdkmath.ZeroInt(), fmt.Errorf("could not find balance in alternative format")
+	return sdkmath.ZeroInt(), errors.New("could not find balance in alternative format")
 }
 
 // Helper function to safely navigate nested maps
@@ -751,4 +752,26 @@ func ExtractExpectedSequence(errMsg string) (uint64, error) {
 	}
 
 	return expectedSeq, nil
+}
+
+// ExtractRequiredFee parses an error message to extract the required fee amount and denom
+// Example: "insufficient fees; got: 9015uatone required: 90150uatone: insufficient fee"
+func ExtractRequiredFee(errMsg string) (amount int64, denom string, err error) {
+	// Try to extract using regex that matches the standard format
+	re := regexp.MustCompile(`required: (\d+)([a-zA-Z]+)`)
+	matches := re.FindStringSubmatch(errMsg)
+
+	if len(matches) == 3 {
+		// Parse the amount
+		amount, err := strconv.ParseInt(matches[1], 10, 64)
+		if err != nil {
+			return 0, "", fmt.Errorf("failed to parse required fee amount: %w", err)
+		}
+
+		// Get the denom
+		denom := matches[2]
+		return amount, denom, nil
+	}
+
+	return 0, "", fmt.Errorf("could not extract required fee from error message: %s", errMsg)
 }

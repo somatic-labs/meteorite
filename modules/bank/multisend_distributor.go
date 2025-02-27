@@ -24,12 +24,18 @@ type MultiSendDistributor struct {
 	seedCounter     int64
 	peerDiscovery   *peerdiscovery.PeerDiscovery
 	lastRefreshTime time.Time
+	addressManager  *lib.AddressManager
 }
 
 // NewMultiSendDistributor creates a new MultiSendDistributor
 func NewMultiSendDistributor(config types.Config, rpcs []string) *MultiSendDistributor {
 	// Initialize with the peer discovery module
 	peerDiscovery := peerdiscovery.New(rpcs)
+
+	// Get the address manager for CSV addresses
+	addressManager := lib.GetAddressManager()
+	// Attempt to load addresses from CSV
+	_ = addressManager.LoadAddressesFromCSV()
 
 	return &MultiSendDistributor{
 		config:          config,
@@ -38,6 +44,7 @@ func NewMultiSendDistributor(config types.Config, rpcs []string) *MultiSendDistr
 		seedCounter:     0,
 		peerDiscovery:   peerDiscovery,
 		lastRefreshTime: time.Now(),
+		addressManager:  addressManager,
 	}
 }
 
@@ -150,14 +157,40 @@ func (m *MultiSendDistributor) CreateDistributedMultiSendMsg(
 	// Create outputs for each recipient based on the seed
 	outputs := make([]banktypes.Output, 0, numRecipients)
 
-	for i := 0; i < numRecipients; i++ {
-		// Generate a deterministic seed for this recipient
-		randomSeed := fmt.Sprintf("%d-%d", seed, i)
+	// First, try to use addresses from CSV if the slip44 is 118 (ATOM)
+	useCSVAddresses := m.addressManager != nil && m.config.Slip44 == 118
 
-		// Get or create recipient address
-		toAccAddress, err := getOrCreateToAddress(msgParams.ToAddress, randomSeed)
-		if err != nil {
-			return nil, "", err
+	for i := 0; i < numRecipients; i++ {
+		var toAccAddress sdk.AccAddress
+		var addressFound bool
+
+		// Attempt to get address from CSV file if applicable
+		if useCSVAddresses {
+			// Get an address from the CSV with the proper prefix conversion
+			csvAddress, csvErr := m.addressManager.GetRandomAddressWithPrefix(m.config.Prefix)
+			if csvErr == nil && csvAddress != "" {
+				// Convert the address if needed
+				csvAccAddress, addrErr := sdk.AccAddressFromBech32(csvAddress)
+				if addrErr == nil {
+					// Successfully got an address from CSV
+					fmt.Printf("Using CSV address with prefix %s: %s\n", m.config.Prefix, csvAddress)
+					toAccAddress = csvAccAddress
+					addressFound = true
+				}
+			}
+		}
+
+		// If we couldn't get a CSV address, fall back to the standard method
+		if !addressFound {
+			// Generate a deterministic seed for this recipient
+			randomSeed := fmt.Sprintf("%d-%d", seed, i)
+
+			// Get or create recipient address
+			var err error
+			toAccAddress, err = getOrCreateToAddress(msgParams.ToAddress, randomSeed)
+			if err != nil {
+				return nil, "", err
+			}
 		}
 
 		// Add this recipient to the outputs
