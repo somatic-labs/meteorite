@@ -29,25 +29,84 @@ const (
 )
 
 func main() {
-	// Define command-line flags
-	useRegistry := flag.Bool("registry", false, "Use the chain registry mode to select a chain to test")
-	configFile := flag.String("f", "nodes.toml", "Path to the configuration file")
+	// Parse command-line flags
+	flags := parseCommandLineFlags()
+
+	// Determine if we're using a config file or the registry
+	if flags.useConfigFile {
+		// Config file mode - load config from file
+		runConfigFileMode(flags)
+	} else {
+		// Registry mode (default) - run the chain registry UI
+		if err := registry.RunRegistryMode(); err != nil {
+			log.Fatalf("Error in registry mode: %v", err)
+		}
+	}
+}
+
+// Flags holds the parsed command-line flags
+type Flags struct {
+	useConfigFile bool
+	configFile    string
+	enableViz     bool
+}
+
+// parseCommandLineFlags parses the command-line flags and returns a Flags struct
+func parseCommandLineFlags() Flags {
+	useConfigFile := flag.Bool("config", false, "Use a configuration file instead of the chain registry")
+	configFile := flag.String("f", "nodes.toml", "Path to the configuration file (only used with -config)")
 	enableViz := flag.Bool("viz", true, "Enable the transaction visualizer")
 
 	// Parse flags
 	flag.Parse()
 
-	// Check if registry mode is requested
-	if *useRegistry {
-		if err := registry.RunRegistryMode(); err != nil {
-			log.Fatalf("Error in registry mode: %v", err)
-		}
-		return
+	return Flags{
+		useConfigFile: *useConfigFile,
+		configFile:    *configFile,
+		enableViz:     *enableViz,
+	}
+}
+
+// runConfigFileMode runs the application in config file mode
+func runConfigFileMode(flags Flags) {
+	// Load configuration and setup environment
+	config, accounts := setupEnvironment(flags.configFile)
+
+	// Print account information
+	printAccountInformation(accounts, config)
+
+	// Check and adjust balances if needed
+	if err := checkAndAdjustBalances(accounts, config); err != nil {
+		log.Fatalf("Failed to handle balance adjustment: %v", err)
 	}
 
-	// Regular mode - load config from file
+	// Get chain ID
+	nodeURL := config.Nodes.RPC[0] // Use the first node
+	chainID, err := lib.GetChainID(nodeURL)
+	if err != nil {
+		log.Fatalf("Failed to get chain ID: %v", err)
+	}
+
+	// Initialize visualizer if enabled
+	if flags.enableViz {
+		initializeVisualizer(config, chainID, len(accounts))
+	}
+
+	// Initialize multisend distributor if needed
+	distributor := initializeDistributor(config, flags.enableViz)
+
+	// Launch transaction broadcasting goroutines
+	launchTransactionBroadcasters(accounts, config, chainID, distributor, flags.enableViz)
+
+	// Clean up resources
+	cleanupResources(distributor, flags.enableViz)
+}
+
+// setupEnvironment loads the configuration and sets up the environment
+func setupEnvironment(configFile string) (types.Config, []types.Account) {
+	// Load config from file
 	config := types.Config{}
-	if _, err := toml.DecodeFile(*configFile, &config); err != nil {
+	if _, err := toml.DecodeFile(configFile, &config); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
@@ -63,6 +122,14 @@ func main() {
 	sdkConfig.SetBech32PrefixForConsensusNode(config.Prefix+"valcons", config.Prefix+"valconspub")
 	sdkConfig.Seal()
 
+	// Validate and set positions
+	accounts := generateAccounts(config, mnemonic)
+
+	return config, accounts
+}
+
+// generateAccounts generates accounts based on the configuration
+func generateAccounts(config types.Config, mnemonic []byte) []types.Account {
 	positions := config.Positions
 	const MaxPositions = 100 // Adjust based on requirements
 	if positions <= 0 || positions > MaxPositions {
@@ -88,16 +155,15 @@ func main() {
 		})
 	}
 
-	// **Print addresses and positions at startup**
+	return accounts
+}
+
+// printAccountInformation prints information about accounts and their balances
+func printAccountInformation(accounts []types.Account, config types.Config) {
+	// Print addresses and positions at startup
 	fmt.Println("Addresses and Positions:")
 	for _, acct := range accounts {
 		fmt.Printf("Position %d: Address: %s\n", acct.Position, acct.Address)
-	}
-
-	// Get balances and ensure they are within 10% of each other
-	balances, err := lib.GetBalances(accounts, config)
-	if err != nil {
-		log.Fatalf("Failed to get balances: %v", err)
 	}
 
 	// Print addresses and balances
@@ -110,45 +176,49 @@ func main() {
 		}
 		fmt.Printf("Position %d: Address: %s, Balance: %s %s\n", acct.Position, acct.Address, balance.String(), config.Denom)
 	}
+}
+
+// checkAndAdjustBalances checks if balances are within the threshold and adjusts them if needed
+func checkAndAdjustBalances(accounts []types.Account, config types.Config) error {
+	// Get balances and ensure they are within 10% of each other
+	balances, err := lib.GetBalances(accounts, config)
+	if err != nil {
+		return fmt.Errorf("failed to get balances: %v", err)
+	}
 
 	fmt.Println("balances", balances)
 
 	if !lib.CheckBalancesWithinThreshold(balances, 0.10) {
 		fmt.Println("Account balances are not within 10% of each other. Adjusting balances...")
 		if err := handleBalanceAdjustment(accounts, balances, config); err != nil {
-			log.Fatalf("Failed to handle balance adjustment: %v", err)
+			return err
 		}
 	}
 
-	nodeURL := config.Nodes.RPC[0] // Use the first node
+	return nil
+}
 
-	chainID, err := lib.GetChainID(nodeURL)
-	if err != nil {
-		log.Fatalf("Failed to get chain ID: %v", err)
+// initializeVisualizer initializes the transaction visualizer
+func initializeVisualizer(config types.Config, chainID string, numAccounts int) {
+	fmt.Println("Initializing transaction visualizer...")
+	if err := broadcast.InitVisualizer(config.Nodes.RPC); err != nil {
+		log.Printf("Warning: Failed to initialize visualizer: %v", err)
 	}
+	broadcast.LogVisualizerDebug(fmt.Sprintf("Starting Meteorite test on chain %s with %d accounts",
+		chainID, numAccounts))
+}
 
-	msgParams := config.MsgParams
-
-	// Initialize the visualizer if enabled
-	if *enableViz {
-		fmt.Println("Initializing transaction visualizer...")
-		if err := broadcast.InitVisualizer(config.Nodes.RPC); err != nil {
-			log.Printf("Warning: Failed to initialize visualizer: %v", err)
-		}
-		broadcast.LogVisualizerDebug(fmt.Sprintf("Starting Meteorite test on chain %s with %d accounts",
-			chainID, len(accounts)))
-	}
-
-	var wg sync.WaitGroup
+// initializeDistributor initializes the MultiSendDistributor if needed
+func initializeDistributor(config types.Config, enableViz bool) *bankmodule.MultiSendDistributor {
+	var distributor *bankmodule.MultiSendDistributor
 
 	// Create a multisend distributor if needed
-	var distributor *bankmodule.MultiSendDistributor
 	if config.MsgType == "bank_multisend" && config.Multisend {
 		// Initialize the distributor with RPC endpoints from config
 		distributor = bankmodule.NewMultiSendDistributor(config, config.Nodes.RPC)
 		fmt.Printf("Initialized MultiSendDistributor with %d RPC endpoints\n", len(config.Nodes.RPC))
 
-		if *enableViz {
+		if enableViz {
 			broadcast.LogVisualizerDebug(fmt.Sprintf("Initialized MultiSendDistributor with %d RPC endpoints",
 				len(config.Nodes.RPC)))
 		}
@@ -162,81 +232,127 @@ func main() {
 		}()
 	}
 
+	return distributor
+}
+
+// launchTransactionBroadcasters launches goroutines to broadcast transactions
+func launchTransactionBroadcasters(
+	accounts []types.Account,
+	config types.Config,
+	chainID string,
+	distributor *bankmodule.MultiSendDistributor,
+	enableViz bool,
+) {
+	var wg sync.WaitGroup
+
 	for _, account := range accounts {
 		wg.Add(1)
 		go func(acct types.Account) {
 			defer wg.Done()
-
-			// Get account info
-			sequence, accNum, err := lib.GetAccountInfo(acct.Address, config)
-			if err != nil {
-				log.Printf("Failed to get account info for %s: %v", acct.Address, err)
-				return
-			}
-
-			// Use the distributor to get the next RPC endpoint if available
-			var nodeURL string
-			var txMsgType string // Determine the message type based on availability of distributor
-
-			if distributor != nil {
-				nodeURL = distributor.GetNextRPC()
-				if nodeURL == "" {
-					nodeURL = config.Nodes.RPC[0] // Fallback
-				}
-
-				// Use bank_multisend when distributor is available and multisend is enabled
-				if config.MsgType == "bank_send" && config.Multisend {
-					txMsgType = "bank_multisend" // Use our special distributed multisend
-				} else {
-					txMsgType = config.MsgType
-				}
-			} else {
-				nodeURL = config.Nodes.RPC[0] // Default to first RPC
-				txMsgType = config.MsgType
-			}
-
-			txParams := types.TransactionParams{
-				Config:      config,
-				NodeURL:     nodeURL,
-				ChainID:     chainID,
-				Sequence:    sequence,
-				AccNum:      accNum,
-				PrivKey:     acct.PrivKey,
-				PubKey:      acct.PubKey,
-				AcctAddress: acct.Address,
-				MsgType:     txMsgType,
-				MsgParams:   msgParams,
-				Distributor: distributor, // Pass distributor for multisend operations
-			}
-
-			// Log the start of processing for this account
-			if *enableViz {
-				broadcast.LogVisualizerDebug(fmt.Sprintf("Starting transaction broadcasts for account %s (Position %d)",
-					acct.Address, acct.Position))
-			}
-
-			// Broadcast transactions
-			successfulTxs, failedTxs, responseCodes, _ := broadcast.Loop(txParams, BatchSize, int(acct.Position))
-
-			fmt.Printf("Account %s: Successful transactions: %d, Failed transactions: %d\n", acct.Address, successfulTxs, failedTxs)
-			fmt.Println("Response code breakdown:")
-			for code, count := range responseCodes {
-				percentage := float64(count) / float64(successfulTxs+failedTxs) * 100
-				fmt.Printf("Code %d: %d (%.2f%%)\n", code, count, percentage)
-			}
+			processAccount(acct, config, chainID, distributor, enableViz)
 		}(account)
 	}
 
 	wg.Wait()
+}
 
-	// Clean up resources
+// processAccount handles transaction broadcasting for a single account
+func processAccount(
+	acct types.Account,
+	config types.Config,
+	chainID string,
+	distributor *bankmodule.MultiSendDistributor,
+	enableViz bool,
+) {
+	// Get account info
+	sequence, accNum, err := lib.GetAccountInfo(acct.Address, config)
+	if err != nil {
+		log.Printf("Failed to get account info for %s: %v", acct.Address, err)
+		return
+	}
+
+	// Prepare transaction parameters
+	txParams := prepareTransactionParams(acct, config, chainID, sequence, accNum, distributor)
+
+	// Log the start of processing for this account
+	if enableViz {
+		broadcast.LogVisualizerDebug(fmt.Sprintf("Starting transaction broadcasts for account %s (Position %d)",
+			acct.Address, acct.Position))
+	}
+
+	// Broadcast transactions
+	successfulTxs, failedTxs, responseCodes, _ := broadcast.Loop(txParams, BatchSize, int(acct.Position))
+
+	// Print results
+	printResults(acct.Address, successfulTxs, failedTxs, responseCodes)
+}
+
+// prepareTransactionParams prepares the transaction parameters for an account
+func prepareTransactionParams(
+	acct types.Account,
+	config types.Config,
+	chainID string,
+	sequence uint64,
+	accNum uint64,
+	distributor *bankmodule.MultiSendDistributor,
+) types.TransactionParams {
+	// Use the distributor to get the next RPC endpoint if available
+	var nodeURL string
+	var txMsgType string // Determine the message type based on availability of distributor
+
+	if distributor != nil {
+		nodeURL = distributor.GetNextRPC()
+		if nodeURL == "" {
+			nodeURL = config.Nodes.RPC[0] // Fallback
+		}
+
+		// Use bank_multisend when distributor is available and multisend is enabled
+		if config.MsgType == "bank_send" && config.Multisend {
+			txMsgType = "bank_multisend" // Use our special distributed multisend
+		} else {
+			txMsgType = config.MsgType
+		}
+	} else {
+		nodeURL = config.Nodes.RPC[0] // Default to first RPC
+		txMsgType = config.MsgType
+	}
+
+	return types.TransactionParams{
+		Config:      config,
+		NodeURL:     nodeURL,
+		ChainID:     chainID,
+		Sequence:    sequence,
+		AccNum:      accNum,
+		PrivKey:     acct.PrivKey,
+		PubKey:      acct.PubKey,
+		AcctAddress: acct.Address,
+		MsgType:     txMsgType,
+		MsgParams:   config.MsgParams,
+		Distributor: distributor, // Pass distributor for multisend operations
+	}
+}
+
+// printResults prints the results of transaction broadcasting
+func printResults(address string, successfulTxs, failedTxs int, responseCodes map[uint32]int) {
+	fmt.Printf("Account %s: Successful transactions: %d, Failed transactions: %d\n",
+		address, successfulTxs, failedTxs)
+
+	fmt.Println("Response code breakdown:")
+	for code, count := range responseCodes {
+		percentage := float64(count) / float64(successfulTxs+failedTxs) * 100
+		fmt.Printf("Code %d: %d (%.2f%%)\n", code, count, percentage)
+	}
+}
+
+// cleanupResources cleans up resources used by the program
+func cleanupResources(distributor *bankmodule.MultiSendDistributor, enableViz bool) {
 	fmt.Println("All transactions completed. Cleaning up resources...")
 	if distributor != nil {
 		distributor.Cleanup()
 	}
 
 	// Stop the visualizer
-	if *enableViz {
+	if enableViz {
 		broadcast.StopVisualizer()
 	}
 }
