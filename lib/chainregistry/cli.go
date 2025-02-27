@@ -194,60 +194,86 @@ func GenerateConfigFromChain(selection *ChainSelection) (map[string]interface{},
 		var apiBase string
 		var verified bool
 
-		// Try each REST endpoint from the registry until we find one that works
-		if len(chain.APIs.Rest) > 0 {
-			fmt.Println("Testing REST endpoints from chain registry...")
-			for _, restEndpoint := range chain.APIs.Rest {
-				apiURL := restEndpoint.Address
-				// Ensure the API endpoint doesn't end with a trailing slash
-				apiURL = strings.TrimSuffix(apiURL, "/")
+		// Create a new function to check all endpoints concurrently
+		verifyAPIEndpointsConcurrently := func(endpoints []APIEndpoint) string {
+			fmt.Printf("Testing %d endpoints concurrently...\n", len(endpoints))
 
-				fmt.Printf("Trying REST API endpoint from registry: %s\n", apiURL)
-				if verifyAPIEndpoint(apiURL) {
-					apiBase = apiURL
-					verified = true
-					fmt.Printf("✅ Using verified REST endpoint: %s\n", apiBase)
-					break
-				}
+			var wg sync.WaitGroup
+			var mutex sync.Mutex
+			var firstVerifiedEndpoint string
+			var endpointFound bool
+
+			// Create a channel to signal when the first endpoint is found
+			foundSignal := make(chan struct{})
+
+			for _, endpoint := range endpoints {
+				wg.Add(1)
+				go func(apiURL string) {
+					defer wg.Done()
+
+					// Skip if we already found a working endpoint
+					select {
+					case <-foundSignal:
+						return
+					default:
+						// Continue checking
+					}
+
+					// Ensure the API endpoint doesn't end with a trailing slash
+					apiURL = strings.TrimSuffix(apiURL, "/")
+
+					if verifyAPIEndpoint(apiURL) {
+						mutex.Lock()
+						if !endpointFound {
+							endpointFound = true
+							firstVerifiedEndpoint = apiURL
+							close(foundSignal) // Signal that we found an endpoint
+							fmt.Printf("✅ Using verified endpoint: %s\n", apiURL)
+						}
+						mutex.Unlock()
+					}
+				}(endpoint.Address)
+			}
+
+			// Wait for all goroutines to finish
+			wg.Wait()
+
+			return firstVerifiedEndpoint
+		}
+
+		// Check REST endpoints concurrently
+		if len(chain.APIs.Rest) > 0 {
+			fmt.Println("Testing REST endpoints from chain registry concurrently...")
+			if verifiedEndpoint := verifyAPIEndpointsConcurrently(chain.APIs.Rest); verifiedEndpoint != "" {
+				apiBase = verifiedEndpoint
+				verified = true
 			}
 		}
 
-		// If no REST endpoint worked, fall back to the API endpoints if available
+		// If no REST endpoint worked, try API endpoints concurrently
 		if !verified && len(chain.APIs.API) > 0 {
-			fmt.Println("Testing API endpoints from chain registry...")
-			for _, apiEndpoint := range chain.APIs.API {
-				apiURL := apiEndpoint.Address
-				// Ensure the API endpoint doesn't end with a trailing slash
-				apiURL = strings.TrimSuffix(apiURL, "/")
-
-				fmt.Printf("Trying API endpoint from registry: %s\n", apiURL)
-				if verifyAPIEndpoint(apiURL) {
-					apiBase = apiURL
-					verified = true
-					fmt.Printf("✅ Using verified API endpoint: %s\n", apiBase)
-					break
-				}
+			fmt.Println("Testing API endpoints from chain registry concurrently...")
+			if verifiedEndpoint := verifyAPIEndpointsConcurrently(chain.APIs.API); verifiedEndpoint != "" {
+				apiBase = verifiedEndpoint
+				verified = true
 			}
 		}
 
 		// Last resort: try to derive from RPC if no registry endpoints worked
 		if !verified {
 			fmt.Println("⚠️ Warning: No valid REST or API endpoints found in registry. Trying to derive from RPC...")
-			// Try each RPC endpoint until we find one with a working API
-			for _, rpcBase := range selection.OpenEndpoints {
+			// Create a slice of derived endpoints
+			derivedEndpoints := make([]APIEndpoint, len(selection.OpenEndpoints))
+			for i, rpcBase := range selection.OpenEndpoints {
 				// Convert RPC to API (assumed to be on port 1317)
 				apiURL := strings.ReplaceAll(rpcBase, "26657", "1317")
 				apiURL = strings.ReplaceAll(apiURL, "/rpc", "/rest")
-				// Ensure the API endpoint doesn't end with a trailing slash
-				apiURL = strings.TrimSuffix(apiURL, "/")
+				derivedEndpoints[i] = APIEndpoint{Address: apiURL}
+			}
 
-				fmt.Printf("Trying API endpoint derived from %s: %s\n", rpcBase, apiURL)
-				if verifyAPIEndpoint(apiURL) {
-					apiBase = apiURL
-					verified = true
-					fmt.Printf("✅ Using verified derived API endpoint: %s\n", apiBase)
-					break
-				}
+			if verifiedEndpoint := verifyAPIEndpointsConcurrently(derivedEndpoints); verifiedEndpoint != "" {
+				apiBase = verifiedEndpoint
+				verified = true
 			}
 		}
 
