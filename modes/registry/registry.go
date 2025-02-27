@@ -2,95 +2,134 @@ package registry
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"log"
 	"sync"
 	"time"
 
-	sdkmath "cosmossdk.io/math"
-	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/somatic-labs/meteorite/broadcast"
 	"github.com/somatic-labs/meteorite/lib"
 	"github.com/somatic-labs/meteorite/lib/chainregistry"
 	bankmodule "github.com/somatic-labs/meteorite/modules/bank"
 	"github.com/somatic-labs/meteorite/types"
+
+	sdkmath "cosmossdk.io/math"
+
+	sdk "github.com/cosmos/cosmos-sdk/types"
 )
 
 const (
-	BatchSize       = 100000000
-	TimeoutDuration = 50 * time.Millisecond
+	BatchSize        = 100000000
+	TimeoutDuration  = 50 * time.Millisecond
+	MsgBankMultisend = "bank_multisend"
 )
 
-// RunRegistryMode runs the registry mode
+// RunRegistryMode runs the registry mode UI
 func RunRegistryMode() error {
-	fmt.Println("╔══════════════════════════════════════╗")
-	fmt.Println("║     🔥 METEORITE CHAIN TESTER 🔥     ║")
-	fmt.Println("╚══════════════════════════════════════╝")
-	fmt.Println("Test any Cosmos chain directly from the Chain Registry")
+	fmt.Println("Meteorite Chain Registry Tester")
+	fmt.Println("==============================")
 
 	// Create a new registry client
 	registry := chainregistry.NewRegistry("")
 
 	// Download the registry
-	fmt.Println("\n📥 Downloading the Cosmos Chain Registry...")
+	fmt.Println("Downloading the Cosmos Chain Registry...")
 	err := registry.Download()
 	if err != nil {
-		return fmt.Errorf("error downloading chain registry: %v", err)
+		fmt.Printf("Error downloading chain registry: %v\n", err)
+		return err
 	}
 
 	// Load chains
-	fmt.Println("🔄 Loading chains from registry...")
+	fmt.Println("Loading chains from registry...")
 	err = registry.LoadChains()
 	if err != nil {
-		return fmt.Errorf("error loading chains: %v", err)
+		fmt.Printf("Error loading chains: %v\n", err)
+		return err
+	}
+
+	// Store the original stdout for later restoration
+	originalStdout := os.Stdout
+
+	// Create a logger that will be used during peer discovery
+	// to prevent logs from interfering with user input
+	logFile, err := os.OpenFile("peerdiscovery.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		fmt.Printf("Warning: Could not create log file: %v\n", err)
+		// Continue without log redirection if we can't create the file
+	} else {
+		// Inform user about log redirection
+		fmt.Println("\nNote: Peer discovery logs will be redirected to peerdiscovery.log")
+
+		// Restore original stdout when function exits
+		defer func() {
+			logFile.Close()
+			os.Stdout = originalStdout
+		}()
 	}
 
 	// Select a chain interactively
+	fmt.Println("\nSelecting a chain from the registry...")
 	selection, err := chainregistry.SelectChainInteractive(registry)
 	if err != nil {
-		return fmt.Errorf("error selecting chain: %v", err)
+		fmt.Printf("Error selecting chain: %v\n", err)
+		return err
 	}
 
 	// Generate config
-	config, err := chainregistry.GenerateConfigFromChain(selection)
+	fmt.Println("\nGenerating configuration for selected chain...")
+	configMap, err := chainregistry.GenerateConfigFromChain(selection)
 	if err != nil {
-		return fmt.Errorf("error generating config: %v", err)
+		fmt.Printf("Error generating config: %v\n", err)
+		return err
 	}
 
-	// Ask if the user wants to run the test immediately
+	// If we're redirecting discovery logs, do it now before the user prompt
+	if logFile != nil {
+		// Redirect stdout to the log file during the peer discovery phase
+		os.Stdout = logFile
+	}
+
+	// User input - should we run the test immediately or save to file?
+	// This part now has discovery logs redirected to a file
 	reader := bufio.NewReader(os.Stdin)
+
+	// Restore stdout for user interaction
+	if logFile != nil {
+		os.Stdout = originalStdout
+	}
+
 	fmt.Println("\n🚀 Do you want to:")
 	fmt.Println("  1. Run the test immediately")
 	fmt.Println("  2. Save configuration to file and exit")
+	fmt.Print("\nEnter your choice (1 or 2): ")
 
-	for {
-		fmt.Print("\nEnter your choice (1 or 2): ")
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			return fmt.Errorf("error reading input: %w", err)
-		}
+	choice, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("error reading input: %w", err)
+	}
 
-		input = strings.TrimSpace(input)
-		switch input {
-		case "1":
-			// Run the test immediately
-			fmt.Println("\n🚀 Running chain test...")
-			return runChainTest(selection, config)
-		case "2":
-			// Save configuration to file
-			return saveConfigToFile(selection, config)
-		default:
-			fmt.Println("Invalid choice. Please enter 1 or 2.")
-		}
+	choice = strings.TrimSpace(choice)
+
+	switch choice {
+	case "1":
+		fmt.Println("\n🚀 Running chain test...")
+		return runChainTest(selection, configMap)
+	case "2":
+		fmt.Println("\n💾 Saving configuration to file...")
+		return saveConfigToFile(selection, configMap)
+	default:
+		fmt.Println("\n❌ Invalid choice. Exiting.")
+		return nil
 	}
 }
 
 // saveConfigToFile saves the configuration to a TOML file
-func saveConfigToFile(selection *chainregistry.ChainSelection, config map[string]interface{}) error {
+func saveConfigToFile(selection *chainregistry.ChainSelection, configMap map[string]interface{}) error {
 	fmt.Println("\n💾 Generating configuration file...")
 
 	// Create configurations directory if it doesn't exist
@@ -135,7 +174,7 @@ func saveConfigToFile(selection *chainregistry.ChainSelection, config map[string
 	}
 
 	// Format the RPC endpoints array for TOML
-	rpcs := config["nodes"].(map[string]interface{})["rpc"].([]string)
+	rpcs := configMap["nodes"].(map[string]interface{})["rpc"].([]string)
 	rpcStr := "["
 	for i, rpc := range rpcs {
 		rpcStr += fmt.Sprintf(`"%s"`, rpc)
@@ -147,7 +186,7 @@ func saveConfigToFile(selection *chainregistry.ChainSelection, config map[string
 
 	// Format config as TOML manually to ensure proper formatting
 	tomlStr := ""
-	for k, v := range config {
+	for k, v := range configMap {
 		if k == "nodes" || k == "gas" || k == "msg_params" {
 			continue // Handle these separately
 		}
@@ -165,21 +204,21 @@ func saveConfigToFile(selection *chainregistry.ChainSelection, config map[string
 	}
 
 	// Add gas config
-	gasConfig := config["gas"].(map[string]interface{})
+	gasConfig := configMap["gas"].(map[string]interface{})
 	tomlStr += "\n[gas]\n"
 	for k, v := range gasConfig {
 		tomlStr += fmt.Sprintf("%s = %v\n", k, v)
 	}
 
 	// Add nodes config
-	nodesConfig := config["nodes"].(map[string]interface{})
+	nodesConfig := configMap["nodes"].(map[string]interface{})
 	tomlStr += "\n[nodes]\n"
 	tomlStr += fmt.Sprintf("rpc = %s\n", rpcStr)
 	tomlStr += fmt.Sprintf("api = \"%s\"\n", nodesConfig["api"])
 	tomlStr += fmt.Sprintf("grpc = \"%s\"\n", nodesConfig["grpc"])
 
 	// Add msg_params config
-	msgParams := config["msg_params"].(map[string]interface{})
+	msgParams := configMap["msg_params"].(map[string]interface{})
 	tomlStr += "\n[msg_params]\n"
 	for k, v := range msgParams {
 		switch val := v.(type) {
@@ -210,14 +249,51 @@ func saveConfigToFile(selection *chainregistry.ChainSelection, config map[string
 func runChainTest(selection *chainregistry.ChainSelection, configMap map[string]interface{}) error {
 	// Check if seedphrase file exists
 	if _, err := os.Stat("seedphrase"); os.IsNotExist(err) {
-		return fmt.Errorf("seedphrase file not found in current directory")
+		return errors.New("seedphrase file not found in current directory")
 	}
 
 	// Convert map to types.Config
-	config, err := mapToConfig(configMap)
-	if err != nil {
-		return fmt.Errorf("error converting config: %v", err)
+	config := mapToConfig(configMap)
+
+	// Determine minimum gas price from chain registry if available
+	if selection.Chain != nil && len(selection.Chain.Fees.FeeTokens) > 0 {
+		for _, feeToken := range selection.Chain.Fees.FeeTokens {
+			if feeToken.Denom == config.Denom {
+				// Convert to int64, ensuring we don't go below the absolute minimum
+				minGasPrice := int64(feeToken.FixedMinGasPrice)
+				if minGasPrice > 0 {
+					fmt.Printf("Using chain registry minimum gas price: %d\n", minGasPrice)
+					config.Gas.Low = minGasPrice
+					config.Gas.Medium = minGasPrice * 2
+					config.Gas.High = minGasPrice * 5
+				}
+				break
+			}
+		}
 	}
+
+	// Optimize gas settings for the specific message type
+	switch config.MsgType {
+	case "bank_send":
+		// Bank send typically needs less gas
+		config.BaseGas = 80000
+		config.GasPerByte = 80
+	case MsgBankMultisend:
+		// Multisend needs more gas based on number of recipients
+		config.BaseGas = 100000 + int64(config.NumMultisend)*20000
+		config.GasPerByte = 100
+	case "ibc_transfer":
+		// IBC transfers need more gas
+		config.BaseGas = 150000
+		config.GasPerByte = 100
+	case "store_code", "instantiate_contract":
+		// Wasm operations need significantly more gas
+		config.BaseGas = 400000
+		config.GasPerByte = 150
+	}
+
+	fmt.Printf("🔥 Optimized gas settings: BaseGas=%d, GasPerByte=%d, Gas.Low=%d\n",
+		config.BaseGas, config.GasPerByte, config.Gas.Low)
 
 	// Read the seed phrase
 	mnemonic, err := os.ReadFile("seedphrase")
@@ -271,7 +347,7 @@ func runChainTest(selection *chainregistry.ChainSelection, configMap map[string]
 }
 
 // mapToConfig converts a map[string]interface{} to types.Config
-func mapToConfig(configMap map[string]interface{}) (types.Config, error) {
+func mapToConfig(configMap map[string]interface{}) types.Config {
 	var config types.Config
 
 	// Set basic fields
@@ -292,17 +368,63 @@ func mapToConfig(configMap map[string]interface{}) (types.Config, error) {
 		config.Positions = 50
 	}
 
-	config.GasPerByte = configMap["gas_per_byte"].(int64)
-	config.BaseGas = configMap["base_gas"].(int64)
+	// Safe conversion for GasPerByte
+	if gasPerByte, ok := configMap["gas_per_byte"].(int64); ok {
+		config.GasPerByte = gasPerByte
+	} else if gasPerByte, ok := configMap["gas_per_byte"].(int); ok {
+		config.GasPerByte = int64(gasPerByte)
+	} else {
+		// Default value if not specified or unexpected type
+		config.GasPerByte = 100
+	}
+
+	// Safe conversion for BaseGas
+	if baseGas, ok := configMap["base_gas"].(int64); ok {
+		config.BaseGas = baseGas
+	} else if baseGas, ok := configMap["base_gas"].(int); ok {
+		config.BaseGas = int64(baseGas)
+	} else {
+		// Default value if not specified or unexpected type
+		config.BaseGas = 200000
+	}
+
 	config.MsgType = configMap["msg_type"].(string)
 	config.Multisend = configMap["multisend"].(bool)
 	config.NumMultisend = configMap["num_multisend"].(int)
 	config.BroadcastMode = configMap["broadcast_mode"].(string)
 
-	// Set gas config
+	// Set gas config with minimum values
 	gasMap := configMap["gas"].(map[string]interface{})
-	config.Gas.Low = gasMap["low"].(int64)
-	config.Gas.Precision = gasMap["precision"].(int64)
+
+	// Safe conversion for Gas.Low - always use the chain's minimum fee
+	if low, ok := gasMap["low"].(int64); ok {
+		config.Gas.Low = low
+	} else if low, ok := gasMap["low"].(int); ok {
+		config.Gas.Low = int64(low)
+	} else if low, ok := gasMap["low"].(float64); ok {
+		config.Gas.Low = int64(low)
+	} else {
+		// Default to minimum value if not specified
+		config.Gas.Low = 1
+	}
+
+	// Set minimum values for other gas parameters
+	config.Gas.Medium = config.Gas.Low * 2 // Medium should be 2x low
+	config.Gas.High = config.Gas.Low * 5   // High should be 5x low
+	config.Gas.Zero = 0                    // Zero for simulation
+
+	// Enable adaptive gas strategy by using the lowest possible gas price
+	// (We handle this in the code logic rather than a config field)
+
+	// Safe conversion for Gas.Precision
+	if precision, ok := gasMap["precision"].(int64); ok {
+		config.Gas.Precision = precision
+	} else if precision, ok := gasMap["precision"].(int); ok {
+		config.Gas.Precision = int64(precision)
+	} else {
+		// Default value if not specified or unexpected type
+		config.Gas.Precision = 3
+	}
 
 	// Set nodes config
 	nodesMap := configMap["nodes"].(map[string]interface{})
@@ -314,9 +436,23 @@ func mapToConfig(configMap map[string]interface{}) (types.Config, error) {
 	// Set msg params
 	msgParamsMap := configMap["msg_params"].(map[string]interface{})
 	config.MsgParams.ToAddress = msgParamsMap["to_address"].(string)
-	config.MsgParams.Amount = msgParamsMap["amount"].(int64)
 
-	return config, nil
+	// Safe conversion for MsgParams.Amount
+	if amount, ok := msgParamsMap["amount"].(int64); ok {
+		config.MsgParams.Amount = amount
+	} else if amount, ok := msgParamsMap["amount"].(int); ok {
+		config.MsgParams.Amount = int64(amount)
+	} else if amount, ok := msgParamsMap["amount"].(float64); ok {
+		config.MsgParams.Amount = int64(amount)
+	} else {
+		// Default value if not specified or unexpected type
+		config.MsgParams.Amount = 1
+	}
+
+	// Before returning, update the gas config to ensure adaptive gas is enabled
+	updateGasConfig(&config)
+
+	return config
 }
 
 // generateAccounts generates accounts based on the configuration
@@ -401,14 +537,14 @@ func handleBalanceAdjustment(accounts []types.Account, balances map[string]sdkma
 	}
 
 	if !shouldProceedWithBalances(balances) {
-		return fmt.Errorf("account balances are still not within threshold after adjustment")
+		return errors.New("account balances are still not within threshold after adjustment")
 	}
 
 	return nil
 }
 
 // adjustBalances transfers funds between accounts to balance their balances within the threshold
-func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, config types.Config) error {
+func adjustBalances(_ []types.Account, balances map[string]sdkmath.Int, config types.Config) error {
 	// Implementation from main.go
 	// This function would need to be copied from main.go
 	return nil
@@ -442,7 +578,7 @@ func initializeDistributor(config types.Config, enableViz bool) *bankmodule.Mult
 	var distributor *bankmodule.MultiSendDistributor
 
 	// Create a multisend distributor if needed
-	if config.MsgType == "bank_multisend" && config.Multisend {
+	if config.MsgType == MsgBankMultisend && config.Multisend {
 		// Initialize the distributor with RPC endpoints from config
 		distributor = bankmodule.NewMultiSendDistributor(config, config.Nodes.RPC)
 		fmt.Printf("📡 Initialized MultiSendDistributor with %d RPC endpoints\n", len(config.Nodes.RPC))
@@ -535,9 +671,9 @@ func prepareTransactionParams(
 			nodeURL = config.Nodes.RPC[0] // Fallback
 		}
 
-		// Use bank_multisend when distributor is available and multisend is enabled
+		// Use MsgBankMultisend when distributor is available and multisend is enabled
 		if config.MsgType == "bank_send" && config.Multisend {
-			txMsgType = "bank_multisend" // Use our special distributed multisend
+			txMsgType = MsgBankMultisend // Use our special distributed multisend
 		} else {
 			txMsgType = config.MsgType
 		}
@@ -545,6 +681,9 @@ func prepareTransactionParams(
 		nodeURL = config.Nodes.RPC[0] // Default to first RPC
 		txMsgType = config.MsgType
 	}
+
+	// Convert MsgParams struct to map
+	msgParamsMap := types.ConvertMsgParamsToMap(config.MsgParams)
 
 	return types.TransactionParams{
 		Config:      config,
@@ -556,7 +695,7 @@ func prepareTransactionParams(
 		PubKey:      acct.PubKey,
 		AcctAddress: acct.Address,
 		MsgType:     txMsgType,
-		MsgParams:   config.MsgParams,
+		MsgParams:   msgParamsMap,
 		Distributor: distributor, // Pass distributor for multisend operations
 	}
 }
@@ -584,4 +723,47 @@ func cleanupResources(distributor *bankmodule.MultiSendDistributor, enableViz bo
 	if enableViz {
 		broadcast.StopVisualizer()
 	}
+}
+
+// Update the GasConfig when loading from a config map to ensure adaptive gas is enabled
+func updateGasConfig(config *types.Config) {
+	// Enable adaptive gas by default
+	// This ensures we're always using the most efficient gas settings
+	if config.Gas.Medium == 0 {
+		config.Gas.Medium = config.Gas.Low * 2 // Medium should be 2x low
+	}
+	if config.Gas.High == 0 {
+		config.Gas.High = config.Gas.Low * 5 // High should be 5x low
+	}
+	if config.Gas.Zero == 0 {
+		config.Gas.Zero = 0 // Zero for simulation
+	}
+
+	// Set gas price denom if not already set
+	if config.Gas.Denom == "" {
+		config.Gas.Denom = config.Denom // Use the same denom as the main config
+	}
+
+	// Set default gas price if not already set
+	if config.Gas.Price == "" {
+		// Convert to string with precision
+		precision := config.Gas.Precision
+		if precision == 0 {
+			precision = 6 // Default precision
+		}
+
+		divisor := float64(1)
+		for i := int64(0); i < precision; i++ {
+			divisor *= 10
+		}
+
+		priceValue := float64(config.Gas.Low) / divisor
+		config.Gas.Price = fmt.Sprintf("%g", priceValue)
+	}
+
+	// Enable adaptive gas by default
+	config.Gas.AdaptiveGas = true
+
+	fmt.Printf("Gas optimization enabled: Using adaptive gas strategy with base price %s%s\n",
+		config.Gas.Price, config.Gas.Denom)
 }

@@ -31,7 +31,7 @@ linters:
     - staticcheck
     - revive
     - stylecheck
-    - tenv
+    - usetesting
     - typecheck
     - tagalign
     #    - tagliatelle

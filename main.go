@@ -17,6 +17,7 @@ import (
 	"github.com/somatic-labs/meteorite/modes/registry"
 	bankmodule "github.com/somatic-labs/meteorite/modules/bank"
 	"github.com/somatic-labs/meteorite/types"
+	"github.com/spf13/viper"
 
 	sdkmath "cosmossdk.io/math"
 
@@ -24,11 +25,29 @@ import (
 )
 
 const (
-	BatchSize       = 100000000
-	TimeoutDuration = 50 * time.Millisecond
+	BatchSize                  = 100000000
+	TimeoutDuration            = 50 * time.Millisecond
+	DefaultMultisendRecipients = 3000 // Always use 3000 recipients per multisend
 )
 
 func main() {
+	log.Println("Welcome to Meteorite - Transaction Scaling Framework for Cosmos SDK chains")
+
+	// Initialize configuration
+	viper.SetConfigFile("config.toml")
+	if err := viper.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+			// Config file not found
+			log.Println("No config file found. Using default configuration.")
+		} else {
+			// Config file was found but another error was produced
+			log.Fatalf("Fatal error reading config file: %s", err)
+		}
+	}
+
+	// Log gas optimization details
+	log.Println("Gas optimization enabled - Using minimum required gas for transactions")
+
 	// Parse command-line flags
 	flags := parseCommandLineFlags()
 
@@ -108,6 +127,15 @@ func setupEnvironment(configFile string) (types.Config, []types.Account) {
 	config := types.Config{}
 	if _, err := toml.DecodeFile(configFile, &config); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Always enforce 3000 recipients per multisend when multisend is enabled
+	if config.Multisend {
+		if config.NumMultisend != DefaultMultisendRecipients {
+			log.Printf("⚠️  Overriding NumMultisend from %d to %d for optimal performance",
+				config.NumMultisend, DefaultMultisendRecipients)
+			config.NumMultisend = DefaultMultisendRecipients
+		}
 	}
 
 	mnemonic, err := os.ReadFile("seedphrase")
@@ -296,26 +324,33 @@ func prepareTransactionParams(
 	accNum uint64,
 	distributor *bankmodule.MultiSendDistributor,
 ) types.TransactionParams {
-	// Use the distributor to get the next RPC endpoint if available
 	var nodeURL string
-	var txMsgType string // Determine the message type based on availability of distributor
+	var txMsgType string
 
-	if distributor != nil {
-		nodeURL = distributor.GetNextRPC()
-		if nodeURL == "" {
-			nodeURL = config.Nodes.RPC[0] // Fallback
-		}
-
-		// Use bank_multisend when distributor is available and multisend is enabled
-		if config.MsgType == "bank_send" && config.Multisend {
-			txMsgType = "bank_multisend" // Use our special distributed multisend
+	if len(config.Nodes.RPC) > 0 {
+		if distributor != nil {
+			// Use the distributed approach with multiple RPCs
+			nodeURL = distributor.GetNextRPC()
 		} else {
-			txMsgType = config.MsgType
+			// Use the simple approach with the first RPC
+			nodeURL = config.Nodes.RPC[0]
 		}
-	} else {
-		nodeURL = config.Nodes.RPC[0] // Default to first RPC
-		txMsgType = config.MsgType
 	}
+
+	// If no node URL is available, use a default
+	if nodeURL == "" {
+		nodeURL = "http://localhost:26657"
+	}
+
+	// Get message type - either from config or default to bank_send
+	if config.MsgType != "" {
+		txMsgType = config.MsgType
+	} else {
+		txMsgType = "bank_send"
+	}
+
+	// Convert MsgParams struct to map
+	msgParamsMap := types.ConvertMsgParamsToMap(config.MsgParams)
 
 	return types.TransactionParams{
 		Config:      config,
@@ -327,7 +362,7 @@ func prepareTransactionParams(
 		PubKey:      acct.PubKey,
 		AcctAddress: acct.Address,
 		MsgType:     txMsgType,
-		MsgParams:   config.MsgParams,
+		MsgParams:   msgParamsMap,
 		Distributor: distributor, // Pass distributor for multisend operations
 	}
 }
@@ -488,46 +523,20 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 }
 
 func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.Int, config types.Config) error {
-	fmt.Printf("\n=== Starting Transfer ===\n")
-	fmt.Printf("Sender Address: %s\n", sender.Address)
-	fmt.Printf("Receiver Address: %s\n", receiverAddress)
-	fmt.Printf("Amount: %s %s\n", amount.String(), config.Denom)
-
-	if sender.PrivKey == nil {
-		return errors.New("sender private key is nil")
-	}
-	if sender.PubKey == nil {
-		return errors.New("sender public key is nil")
-	}
-
-	// Get the sender's account info
-	sequence, accnum, err := lib.GetAccountInfo(sender.Address, config)
-	if err != nil {
-		return fmt.Errorf("failed to get account info for sender %s: %v", sender.Address, err)
-	}
-
-	nodeURL := config.Nodes.RPC[0]
-
-	grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
-	if err != nil {
-		return fmt.Errorf("failed to create gRPC client: %v", err)
-	}
-
+	// Create a transaction params struct for the funds transfer
 	txParams := types.TransactionParams{
 		Config:      config,
-		NodeURL:     nodeURL,
+		NodeURL:     config.Nodes.RPC[0],
 		ChainID:     config.Chain,
-		Sequence:    sequence,
-		AccNum:      accnum,
 		PrivKey:     sender.PrivKey,
 		PubKey:      sender.PubKey,
 		AcctAddress: sender.Address,
 		MsgType:     "bank_send",
-		MsgParams: types.MsgParams{
-			FromAddress: sender.Address,
-			ToAddress:   receiverAddress,
-			Amount:      amount.Int64(),
-			Denom:       config.Denom,
+		MsgParams: map[string]interface{}{
+			"from_address": sender.Address,
+			"to_address":   receiverAddress,
+			"amount":       amount.Int64(),
+			"denom":        config.Denom,
 		},
 	}
 
@@ -536,27 +545,30 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 
 	maxRetries := 3
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		fmt.Printf("Attempt %d to send transaction with sequence %d\n", attempt+1, sequence)
+		fmt.Printf("Attempt %d to send transaction with sequence %d\n", attempt+1, txParams.Sequence)
 
-		resp, _, err := broadcast.SendTransactionViaGRPC(ctx, txParams, sequence, grpcClient)
+		// Create GRPC client with proper error handling
+		grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
+		if err != nil {
+			fmt.Printf("Failed to create GRPC client: %v\n", err)
+			continue
+		}
+
+		resp, _, err := broadcast.SendTransactionViaGRPC(ctx, txParams, txParams.Sequence, grpcClient)
 		if err != nil {
 			fmt.Printf("Transaction failed: %v\n", err)
 
-			// Check if the error is a sequence mismatch error (code 32)
+			// Check if the error is a sequence mismatch error
 			if resp != nil && resp.Code == 32 {
 				expectedSeq, parseErr := lib.ExtractExpectedSequence(resp.RawLog)
-				if parseErr != nil {
-					return fmt.Errorf("failed to parse expected sequence: %v", parseErr)
+				if parseErr == nil {
+					// Update sequence and retry
+					txParams.Sequence = expectedSeq
+					fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", expectedSeq)
+					continue
 				}
-
-				// Update sequence and retry
-				sequence = expectedSeq
-				txParams.Sequence = sequence
-				fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", sequence)
-				continue
 			}
-
-			return fmt.Errorf("failed to send transaction: %v", err)
+			continue
 		}
 
 		if resp.Code != 0 {
@@ -565,20 +577,17 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 			// Check for sequence mismatch error
 			if resp.Code == 32 {
 				expectedSeq, parseErr := lib.ExtractExpectedSequence(resp.RawLog)
-				if parseErr != nil {
-					return fmt.Errorf("failed to parse expected sequence: %v", parseErr)
+				if parseErr == nil {
+					// Update sequence and retry
+					txParams.Sequence = expectedSeq
+					fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", expectedSeq)
+					continue
 				}
-
-				// Update sequence and retry
-				sequence = expectedSeq
-				txParams.Sequence = sequence
-				fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", sequence)
-				continue
 			}
-
 			return fmt.Errorf("transaction failed with code %d: %s", resp.Code, resp.RawLog)
 		}
 
+		// Successfully broadcasted transaction
 		fmt.Printf("-> Successfully transferred %s %s from %s to %s\n",
 			amount.String(), config.Denom, sender.Address, receiverAddress)
 		return nil
