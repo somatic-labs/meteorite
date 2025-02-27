@@ -15,4 +15,5 @@ type TransactionParams struct {
 	AcctAddress string
 	MsgType     string
 	MsgParams   MsgParams
+	Distributor interface{} // Used for MultiSendDistributor to avoid circular imports
 }

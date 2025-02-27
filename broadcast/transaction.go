@@ -64,6 +64,16 @@ func BuildAndSignTransaction(
 			// Use regular send otherwise
 			msg, memo, err = meteoritebank.CreateBankSendMsg(txParams.Config, txParams.AcctAddress, txParams.MsgParams)
 		}
+	case "bank_multisend":
+		// Specific case for distributed multisend using the Distributor
+		if distributor, ok := txParams.Distributor.(*meteoritebank.MultiSendDistributor); ok && distributor != nil {
+			// Get a seed for deterministic address generation
+			seed := distributor.GetNextSeed()
+			msg, memo, err = distributor.CreateDistributedMultiSendMsg(txParams.AcctAddress, txParams.MsgParams, seed)
+		} else {
+			// Fall back to regular multisend if no distributor is available
+			msg, memo, err = meteoritebank.CreateBankMultiSendMsg(txParams.Config, txParams.AcctAddress, txParams.MsgParams)
+		}
 	case "store_code":
 		msg, memo, err = wasm.CreateStoreCodeMsg(txParams.Config, txParams.AcctAddress, txParams.MsgParams)
 	case "instantiate_contract":

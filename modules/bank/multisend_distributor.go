@@ -3,8 +3,10 @@ package bank
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/somatic-labs/meteorite/lib"
+	"github.com/somatic-labs/meteorite/lib/peerdiscovery"
 	types "github.com/somatic-labs/meteorite/types"
 
 	sdkmath "cosmossdk.io/math"
@@ -15,20 +17,27 @@ import (
 
 // MultiSendDistributor manages sending different multisend transactions to different RPC endpoints
 type MultiSendDistributor struct {
-	config      types.Config
-	rpcs        []string
-	rpcIndex    int
-	mutex       sync.Mutex
-	seedCounter int64
+	config          types.Config
+	rpcs            []string
+	rpcIndex        int
+	mutex           sync.Mutex
+	seedCounter     int64
+	peerDiscovery   *peerdiscovery.PeerDiscovery
+	lastRefreshTime time.Time
 }
 
 // NewMultiSendDistributor creates a new MultiSendDistributor
 func NewMultiSendDistributor(config types.Config, rpcs []string) *MultiSendDistributor {
+	// Initialize with the peer discovery module
+	peerDiscovery := peerdiscovery.New(rpcs)
+
 	return &MultiSendDistributor{
-		config:      config,
-		rpcs:        rpcs,
-		rpcIndex:    0,
-		seedCounter: 0,
+		config:          config,
+		rpcs:            rpcs,
+		rpcIndex:        0,
+		seedCounter:     0,
+		peerDiscovery:   peerDiscovery,
+		lastRefreshTime: time.Now(),
 	}
 }
 
@@ -43,7 +52,42 @@ func (m *MultiSendDistributor) GetNextRPC() string {
 
 	rpc := m.rpcs[m.rpcIndex]
 	m.rpcIndex = (m.rpcIndex + 1) % len(m.rpcs)
+
+	// If we've gone through all nodes once, consider refreshing the list
+	if m.rpcIndex == 0 {
+		// Refresh endpoints every 30 minutes or if our endpoint list is small
+		if time.Since(m.lastRefreshTime) > 30*time.Minute || len(m.rpcs) < 5 {
+			go m.RefreshEndpoints()
+		}
+	}
+
 	return rpc
+}
+
+// RefreshEndpoints discovers new RPC endpoints and updates the distributor's list
+func (m *MultiSendDistributor) RefreshEndpoints() {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	fmt.Println("Refreshing RPC endpoints through peer discovery...")
+
+	// Use a reasonable timeout for discovery
+	discoveryTimeout := 30 * time.Second
+
+	// Discover new peers
+	newEndpoints, err := m.peerDiscovery.DiscoverPeers(discoveryTimeout)
+	if err != nil {
+		fmt.Printf("Warning: Failed to discover new peers: %v\n", err)
+		return
+	}
+
+	// If we found new endpoints, update our list
+	if len(newEndpoints) > len(m.rpcs) {
+		fmt.Printf("Updated RPC endpoint list: %d → %d endpoints\n",
+			len(m.rpcs), len(newEndpoints))
+		m.rpcs = newEndpoints
+		m.lastRefreshTime = time.Now()
+	}
 }
 
 // GetNextSeed returns the next seed value for randomization
@@ -87,11 +131,11 @@ func (m *MultiSendDistributor) CreateDistributedMultiSendMsg(
 	outputs := make([]banktypes.Output, 0, numRecipients)
 
 	for i := 0; i < numRecipients; i++ {
-		var toAccAddress sdk.AccAddress
-		var err error
-
 		// Generate a deterministic seed for this recipient
 		randomSeed := fmt.Sprintf("%d-%d", seed, i)
+
+		var toAccAddress sdk.AccAddress
+		var err error
 
 		// Try to use the specified recipient if provided
 		if msgParams.ToAddress != "" {
@@ -131,4 +175,11 @@ func (m *MultiSendDistributor) CreateDistributedMultiSendMsg(
 	}
 
 	return msg, memo, nil
+}
+
+// Cleanup releases resources used by the distributor
+func (m *MultiSendDistributor) Cleanup() {
+	if m.peerDiscovery != nil {
+		m.peerDiscovery.Cleanup()
+	}
 }

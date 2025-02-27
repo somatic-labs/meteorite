@@ -95,4 +95,53 @@ Additional information is available at [faddat/fasf-report](https://github.com/f
 
 We welcome contributions from the community to enhance meteorite's features and capabilities. If you'd like to contribute or have feedback, please open an issue or submit a pull request on GitHub.
 
+## Transaction Visualizer
+
+Meteorite now includes a built-in transaction visualizer that provides real-time insights into transaction processing and network status. The visualizer displays:
+
+- Transaction statistics (total, successful, failed)
+- Transactions per second (TPS) with a live chart
+- Network node status (online, syncing, offline)
+- Mempool state across discovered nodes
+- Latest block height information
+
+### Using the Visualizer
+
+The visualizer is enabled by default and can be toggled with the `-viz` flag:
+
+```bash
+# Run with visualizer (default)
+./meteorite -registry
+
+# Run without visualizer
+./meteorite -registry -viz=false
+```
+
+### Visualizer Output
+
+The visualizer displays information in the terminal:
+
+```
+=== METEORITE TXN STATS ===
+Total Txs: 1250 | Successful: 1230 | Failed: 20 | Success Rate: 98.40%
+TPS: 12.50 | Avg Latency: 125ms | Latest Block: 123456
+
+=== NETWORK NODES ===
+Nodes: 25 | Online: 20 | Syncing: 3 | Offline: 2
+Mempool Txs: 523 | Size: 4.2 MB
+
+=== TPS CHART ===
+▁▂▃▄▅▆▇█▇▆▅▄▃▂▁ (max: 25.0 TPS)
+```
+
+All visualization data is also saved to log files in the `logs/` directory for later analysis.
+
+### Log Files
+
+Log files are created in the `logs/` directory with timestamps in the filename format:
+
+```
+logs/meteorite_viz_2023-05-25_15-30-45.log
+```
+
 ---

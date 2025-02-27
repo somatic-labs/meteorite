@@ -7,6 +7,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/somatic-labs/meteorite/lib/peerdiscovery"
 )
 
 // ChainSelection represents a selected chain and its open RPC endpoints
@@ -72,21 +75,69 @@ func SelectChainInteractive(registry *Registry) (*ChainSelection, error) {
 		return nil, errors.New("selected chain has no fee tokens defined")
 	}
 
-	// Find open RPC endpoints
-	fmt.Println("\nFinding open RPC endpoints...")
-	openEndpoints, err := registry.FindOpenRPCEndpoints(selectedChain.ChainName)
+	// Step 1: Find initial open RPC endpoints from the registry
+	fmt.Println("\nFinding open RPC endpoints from chain registry...")
+	initialEndpoints, err := registry.FindOpenRPCEndpoints(selectedChain.ChainName)
 	if err != nil {
-		return nil, err
+		fmt.Printf("Warning: %v\n", err)
+		fmt.Println("Continuing with peer discovery...")
+	} else {
+		fmt.Printf("\nFound %d open RPC endpoints in the registry for %s\n", len(initialEndpoints), selectedChain.PrettyName)
+		for i, endpoint := range initialEndpoints {
+			fmt.Printf("%3d. %s\n", i+1, endpoint)
+		}
 	}
 
-	fmt.Printf("\nFound %d open RPC endpoints for %s\n", len(openEndpoints), selectedChain.PrettyName)
-	for i, endpoint := range openEndpoints {
-		fmt.Printf("%3d. %s\n", i+1, endpoint)
+	// Step 2: Use peer discovery to find additional RPC endpoints
+	fmt.Println("\nDiscovering additional peer RPC endpoints with public IPs...")
+	fmt.Println("This may take a while as we explore the network...")
+
+	// Initialize peer discovery with any open endpoints we found
+	discovery := peerdiscovery.New(initialEndpoints)
+
+	// Discovery timeout (adjust as needed)
+	discoveryTimeout := 45 * time.Second
+
+	// Discover additional peers
+	allEndpoints, err := discovery.DiscoverPeers(discoveryTimeout)
+	if err != nil {
+		fmt.Printf("Warning: Error during peer discovery: %v\n", err)
 	}
 
+	// Clean up discovery resources
+	discovery.Cleanup()
+
+	// If we found additional endpoints, use them
+	if len(allEndpoints) > len(initialEndpoints) {
+		fmt.Printf("\nDiscovered a total of %d open RPC endpoints for %s\n",
+			len(allEndpoints), selectedChain.PrettyName)
+		fmt.Println("Using discovered endpoints instead of registry endpoints...")
+
+		// Show a sample of the discovered endpoints (limit to avoid overwhelming output)
+		maxDisplay := 10
+		if len(allEndpoints) > maxDisplay {
+			fmt.Printf("Showing first %d endpoints (of %d total):\n", maxDisplay, len(allEndpoints))
+			for i, endpoint := range allEndpoints[:maxDisplay] {
+				fmt.Printf("%3d. %s\n", i+1, endpoint)
+			}
+			fmt.Printf("... and %d more endpoints\n", len(allEndpoints)-maxDisplay)
+		} else {
+			for i, endpoint := range allEndpoints {
+				fmt.Printf("%3d. %s\n", i+1, endpoint)
+			}
+		}
+
+		// Use all discovered endpoints
+		return &ChainSelection{
+			Chain:         selectedChain,
+			OpenEndpoints: allEndpoints,
+		}, nil
+	}
+
+	// Fall back to original endpoints if peer discovery didn't find anything
 	return &ChainSelection{
 		Chain:         selectedChain,
-		OpenEndpoints: openEndpoints,
+		OpenEndpoints: initialEndpoints,
 	}, nil
 }
 

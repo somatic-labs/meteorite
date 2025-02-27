@@ -15,6 +15,7 @@ import (
 	"github.com/somatic-labs/meteorite/client"
 	"github.com/somatic-labs/meteorite/lib"
 	"github.com/somatic-labs/meteorite/modes/registry"
+	bankmodule "github.com/somatic-labs/meteorite/modules/bank"
 	"github.com/somatic-labs/meteorite/types"
 
 	sdkmath "cosmossdk.io/math"
@@ -31,6 +32,7 @@ func main() {
 	// Define command-line flags
 	useRegistry := flag.Bool("registry", false, "Use the chain registry mode to select a chain to test")
 	configFile := flag.String("f", "nodes.toml", "Path to the configuration file")
+	enableViz := flag.Bool("viz", true, "Enable the transaction visualizer")
 
 	// Parse flags
 	flag.Parse()
@@ -127,13 +129,39 @@ func main() {
 
 	msgParams := config.MsgParams
 
-	// Initialize gRPC client
-	//	grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
-	//	if err != nil {
-	//		log.Fatalf("Failed to create gRPC client: %v", err)
-	//	}
+	// Initialize the visualizer if enabled
+	if *enableViz {
+		fmt.Println("Initializing transaction visualizer...")
+		if err := broadcast.InitVisualizer(config.Nodes.RPC); err != nil {
+			log.Printf("Warning: Failed to initialize visualizer: %v", err)
+		}
+		broadcast.LogVisualizerDebug(fmt.Sprintf("Starting Meteorite test on chain %s with %d accounts",
+			chainID, len(accounts)))
+	}
 
 	var wg sync.WaitGroup
+
+	// Create a multisend distributor if needed
+	var distributor *bankmodule.MultiSendDistributor
+	if config.MsgType == "bank_multisend" && config.Multisend {
+		// Initialize the distributor with RPC endpoints from config
+		distributor = bankmodule.NewMultiSendDistributor(config, config.Nodes.RPC)
+		fmt.Printf("Initialized MultiSendDistributor with %d RPC endpoints\n", len(config.Nodes.RPC))
+
+		if *enableViz {
+			broadcast.LogVisualizerDebug(fmt.Sprintf("Initialized MultiSendDistributor with %d RPC endpoints",
+				len(config.Nodes.RPC)))
+		}
+
+		// Start a background goroutine to refresh endpoints periodically
+		go func() {
+			for {
+				time.Sleep(15 * time.Minute)
+				distributor.RefreshEndpoints()
+			}
+		}()
+	}
+
 	for _, account := range accounts {
 		wg.Add(1)
 		go func(acct types.Account) {
@@ -146,6 +174,27 @@ func main() {
 				return
 			}
 
+			// Use the distributor to get the next RPC endpoint if available
+			var nodeURL string
+			var txMsgType string // Determine the message type based on availability of distributor
+
+			if distributor != nil {
+				nodeURL = distributor.GetNextRPC()
+				if nodeURL == "" {
+					nodeURL = config.Nodes.RPC[0] // Fallback
+				}
+
+				// Use bank_multisend when distributor is available and multisend is enabled
+				if config.MsgType == "bank_send" && config.Multisend {
+					txMsgType = "bank_multisend" // Use our special distributed multisend
+				} else {
+					txMsgType = config.MsgType
+				}
+			} else {
+				nodeURL = config.Nodes.RPC[0] // Default to first RPC
+				txMsgType = config.MsgType
+			}
+
 			txParams := types.TransactionParams{
 				Config:      config,
 				NodeURL:     nodeURL,
@@ -155,23 +204,41 @@ func main() {
 				PrivKey:     acct.PrivKey,
 				PubKey:      acct.PubKey,
 				AcctAddress: acct.Address,
-				MsgType:     config.MsgType,
+				MsgType:     txMsgType,
 				MsgParams:   msgParams,
+				Distributor: distributor, // Pass distributor for multisend operations
+			}
+
+			// Log the start of processing for this account
+			if *enableViz {
+				broadcast.LogVisualizerDebug(fmt.Sprintf("Starting transaction broadcasts for account %s (Position %d)",
+					acct.Address, acct.Position))
 			}
 
 			// Broadcast transactions
-			successfulTxns, failedTxns, responseCodes, _ := broadcast.Loop(txParams, BatchSize, int(acct.Position))
+			successfulTxs, failedTxs, responseCodes, _ := broadcast.Loop(txParams, BatchSize, int(acct.Position))
 
-			fmt.Printf("Account %s: Successful transactions: %d, Failed transactions: %d\n", acct.Address, successfulTxns, failedTxns)
+			fmt.Printf("Account %s: Successful transactions: %d, Failed transactions: %d\n", acct.Address, successfulTxs, failedTxs)
 			fmt.Println("Response code breakdown:")
 			for code, count := range responseCodes {
-				percentage := float64(count) / float64(successfulTxns+failedTxns) * 100
+				percentage := float64(count) / float64(successfulTxs+failedTxs) * 100
 				fmt.Printf("Code %d: %d (%.2f%%)\n", code, count, percentage)
 			}
 		}(account)
 	}
 
 	wg.Wait()
+
+	// Clean up resources
+	fmt.Println("All transactions completed. Cleaning up resources...")
+	if distributor != nil {
+		distributor.Cleanup()
+	}
+
+	// Stop the visualizer
+	if *enableViz {
+		broadcast.StopVisualizer()
+	}
 }
 
 // adjustBalances transfers funds between accounts to balance their balances within the threshold
