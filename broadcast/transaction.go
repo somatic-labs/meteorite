@@ -262,8 +262,14 @@ func SimulateGas(
 	msg sdk.Msg,
 	txParams *types.TxParams,
 ) (uint64, error) {
+	// Set default chainID if txParams is nil
+	chainID := ""
+	if txParams != nil && txParams.ChainID != "" {
+		chainID = txParams.ChainID
+	}
+
 	txf := tx.Factory{}.
-		WithChainID(txParams.ChainID).
+		WithChainID(chainID).
 		WithTxConfig(clientCtx.TxConfig)
 
 	_, adjusted, err := tx.CalculateGas(clientCtx, txf, msg)
@@ -273,12 +279,16 @@ func SimulateGas(
 
 	// Apply a safety buffer to the gas estimate
 	safetyBuffer := defaultGasAdjustment
-	if txParams.Gas != nil && txParams.Gas.SafetyBuffer > 0 {
+	if txParams != nil && txParams.Gas != nil && txParams.Gas.SafetyBuffer > 0 {
 		safetyBuffer = txParams.Gas.SafetyBuffer
 	}
 
 	// Make sure the gas doesn't go below the minimum for this message type
-	minGas := getDefaultGasLimitByMsgType(txParams.MsgType)
+	msgType := "unknown"
+	if txParams != nil {
+		msgType = txParams.MsgType
+	}
+	minGas := getDefaultGasLimitByMsgType(msgType)
 	gasLimit := uint64(float64(adjusted) * safetyBuffer)
 	if gasLimit < minGas {
 		gasLimit = minGas
@@ -306,8 +316,16 @@ func getDefaultGasLimitByMsgType(msgType string) uint64 {
 
 // DetermineOptimalGas calculates the optimal gas limit based on simulation and safety buffer
 func DetermineOptimalGas(ctx context.Context, clientCtx client.Context, _ tx.Factory, buffer float64, msgs ...sdk.Msg) (uint64, error) {
+	// Create a basic TxParams with minimum required fields for simulation
+	txParams := &types.TxParams{
+		MsgType: getMsgTypeFromMsg(msgs[0]),
+		Gas: &types.GasSettings{
+			SafetyBuffer: buffer,
+		},
+	}
+
 	// Simulate to get base gas amount
-	simulatedGas, err := SimulateGas(ctx, clientCtx, msgs[0], nil)
+	simulatedGas, err := SimulateGas(ctx, clientCtx, msgs[0], txParams)
 	if err != nil {
 		// If simulation fails, fall back to default estimation
 		return 0, err
@@ -320,6 +338,16 @@ func DetermineOptimalGas(ctx context.Context, clientCtx client.Context, _ tx.Fac
 		simulatedGas, optimalGas)
 
 	return optimalGas, nil
+}
+
+// getMsgTypeFromMsg extracts the message type from a message
+func getMsgTypeFromMsg(msg sdk.Msg) string {
+	typeName := sdk.MsgTypeURL(msg)
+	parts := strings.Split(typeName, ".")
+	if len(parts) > 0 {
+		return strings.ToLower(parts[len(parts)-1])
+	}
+	return "unknown"
 }
 
 // BuildAndSignTransaction builds and signs a transaction from the provided parameters

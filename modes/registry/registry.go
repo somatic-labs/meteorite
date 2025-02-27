@@ -720,11 +720,19 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 
 // TransferFunds transfers funds from a sender account to a receiver address
 func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.Int, config types.Config) error {
+	// Get sequence and account number
+	seq, accNum, err := lib.GetAccountInfo(sender.Address, config)
+	if err != nil {
+		return fmt.Errorf("failed to get account info: %v", err)
+	}
+
 	// Create a transaction params struct for the funds transfer
 	txParams := types.TransactionParams{
 		Config:      config,
 		NodeURL:     config.Nodes.RPC[0],
 		ChainID:     config.Chain,
+		Sequence:    seq,
+		AccNum:      accNum,
 		PrivKey:     sender.PrivKey,
 		PubKey:      sender.PubKey,
 		AcctAddress: sender.Address,
@@ -750,6 +758,11 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 			fmt.Printf("Failed to create GRPC client: %v\n", err)
 			continue
 		}
+
+		// Create a modified version of the config with a higher base gas to avoid simulation issues
+		modifiedConfig := config
+		modifiedConfig.BaseGas = 200000 // Set a reasonable default gas value
+		txParams.Config = modifiedConfig
 
 		resp, _, err := broadcast.SendTransactionViaGRPC(ctx, txParams, txParams.Sequence, grpcClient)
 		if err != nil {
