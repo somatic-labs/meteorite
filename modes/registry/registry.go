@@ -576,21 +576,41 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 	seqManager := lib.GetSequenceManager()
 
 	// Calculate total and average balance
-	var totalBalance sdkmath.Int
+	totalBalance := sdkmath.ZeroInt() // Explicitly initialize to zero
 	validAccounts := 0
 
 	// 1. First, make sure we have valid balances for all accounts
 	for _, account := range accounts {
 		balance, ok := balances[account.Address]
 		if !ok || balance.IsNil() {
+			log.Printf("Skipping account %s with nil or missing balance", account.Address)
 			continue
 		}
-		totalBalance = totalBalance.Add(balance)
+
+		// Safely add the balance to the total
+		if !totalBalance.IsNil() {
+			totalBalance = totalBalance.Add(balance)
+		} else {
+			// If totalBalance somehow became nil, reinitialize it
+			totalBalance = balance
+		}
 		validAccounts++
 	}
 
 	if validAccounts == 0 {
 		return fmt.Errorf("no valid balances found")
+	}
+
+	// Double check that we have a valid total balance before continuing
+	if totalBalance.IsNil() {
+		log.Printf("Warning: Total balance calculation resulted in nil value. Reinitializing to zero.")
+		totalBalance = sdkmath.ZeroInt()
+	}
+
+	// Only proceed if we have a valid total balance
+	if totalBalance.IsZero() {
+		log.Printf("Total balance is zero. No adjustments needed.")
+		return nil
 	}
 
 	avgBalance := totalBalance.Quo(sdkmath.NewInt(int64(validAccounts)))
@@ -616,6 +636,11 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 
 		// Calculate how much this account is off from the average
 		diff := avgBalance.Sub(balance)
+		if diff.IsNil() {
+			log.Printf("Warning: Difference calculation resulted in nil for account %s. Skipping.", account.Address)
+			continue
+		}
+
 		if diff.Abs().LT(minTransferAmount) {
 			// Skip if difference is too small to bother with
 			continue
@@ -680,10 +705,18 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 		// How much does the receiver need
 		toReceive := receiver.Amount
 
+		// Safety check for nil values
+		if toSend.IsNil() || toReceive.IsNil() {
+			log.Printf("Warning: Nil amount detected during transfer calculation. Skipping this pair.")
+			senderIdx++
+			receiverIdx--
+			continue
+		}
+
 		// Determine the transfer amount (minimum of what sender can send and receiver needs)
 		transferAmount := sdkmath.MinInt(toSend, toReceive)
-		if transferAmount.LT(minTransferAmount) {
-			// Skip if transfer amount is too small
+		if transferAmount.IsNil() || transferAmount.LT(minTransferAmount) {
+			// Skip if transfer amount is too small or nil
 			if sender.Amount.IsNegative() {
 				senderIdx++
 			}
@@ -706,17 +739,22 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 
 		transferCount++
 
-		// Update remaining amounts
-		adjustments[senderIdx].Amount = adjustments[senderIdx].Amount.Add(transferAmount)
-		adjustments[receiverIdx].Amount = adjustments[receiverIdx].Amount.Sub(transferAmount)
+		// Update remaining amounts with nil checks
+		if !adjustments[senderIdx].Amount.IsNil() && !transferAmount.IsNil() {
+			adjustments[senderIdx].Amount = adjustments[senderIdx].Amount.Add(transferAmount)
+		}
+
+		if !adjustments[receiverIdx].Amount.IsNil() && !transferAmount.IsNil() {
+			adjustments[receiverIdx].Amount = adjustments[receiverIdx].Amount.Sub(transferAmount)
+		}
 
 		// Move to next sender if this one is done
-		if adjustments[senderIdx].Amount.Abs().LT(minTransferAmount) {
+		if adjustments[senderIdx].Amount.IsNil() || adjustments[senderIdx].Amount.Abs().LT(minTransferAmount) {
 			senderIdx++
 		}
 
 		// Move to next receiver if this one is done
-		if adjustments[receiverIdx].Amount.Abs().LT(minTransferAmount) {
+		if adjustments[receiverIdx].Amount.IsNil() || adjustments[receiverIdx].Amount.Abs().LT(minTransferAmount) {
 			receiverIdx--
 		}
 	}
