@@ -1,15 +1,16 @@
 package lib
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/cosmos/go-bip39"
 	types "github.com/somatic-labs/meteorite/types"
 
 	"github.com/cosmos/cosmos-sdk/crypto/hd"
 	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/go-bip39"
 )
 
 // GetPrivKey derives a private key from a mnemonic at a specific position.
@@ -23,11 +24,13 @@ func GetPrivKey(config types.Config, mnemonic []byte, position uint32) (privKey 
 
 	// Validate mnemonic
 	if !bip39.IsMnemonicValid(mnemonicStr) {
-		return nil, nil, "", fmt.Errorf("invalid mnemonic: please provide a valid BIP39 mnemonic")
+		return nil, nil, "", errors.New("invalid mnemonic: please provide a valid BIP39 mnemonic")
 	}
 
 	algo := hd.Secp256k1
 	hdPath := fmt.Sprintf("m/44'/%d'/0'/0/%d", config.Slip44, position)
+	fmt.Printf("Deriving key using HD path: %s (slip44: %d, chain: %s, prefix: %s)\n",
+		hdPath, config.Slip44, config.Chain, config.Prefix)
 
 	derivedPriv, err := algo.Derive()(mnemonicStr, "", hdPath)
 	if err != nil {

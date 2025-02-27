@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"github.com/somatic-labs/meteorite/broadcast"
 	"github.com/somatic-labs/meteorite/client"
 	"github.com/somatic-labs/meteorite/lib"
+	"github.com/somatic-labs/meteorite/modes/registry"
+	bankmodule "github.com/somatic-labs/meteorite/modules/bank"
 	"github.com/somatic-labs/meteorite/types"
 
 	sdkmath "cosmossdk.io/math"
@@ -21,14 +24,109 @@ import (
 )
 
 const (
-	BatchSize       = 100000000
-	TimeoutDuration = 50 * time.Millisecond
+	SeedphraseFile             = "seedphrase"
+	BalanceThreshold           = 0.05
+	BatchSize                  = 1000
+	TimeoutDuration            = 50 * time.Millisecond
+	DefaultMultisendRecipients = 3000 // Always use 3000 recipients per multisend
+	MaxVisualizer              = 3600
+	DefaultVisualizerRefreshMs = 1000
+	DefaultGoroutinePoolSize   = 20
 )
 
 func main() {
+	log.Println("Welcome to Meteorite - Transaction Scaling Framework for Cosmos SDK chains")
+
+	// Parse command-line flags first
+	flags := parseCommandLineFlags()
+
+	// Determine if we're using a config file or the registry
+	if flags.useConfigFile {
+		// Config file mode - load config from file
+		log.Println("Running in config file mode with file:", flags.configFile)
+		runConfigFileMode(flags)
+	} else {
+		// Registry mode is the default - no config file needed
+		log.Println("Running in zero-configuration registry mode - no config file needed")
+		if err := registry.RunRegistryMode(); err != nil {
+			log.Fatalf("Error in registry mode: %v", err)
+		}
+	}
+}
+
+// Flags holds the parsed command-line flags
+type Flags struct {
+	useConfigFile bool
+	configFile    string
+	enableViz     bool
+}
+
+// parseCommandLineFlags parses the command-line flags and returns a Flags struct
+func parseCommandLineFlags() Flags {
+	useConfigFile := flag.Bool("config", false, "Use a configuration file instead of zero-configuration registry mode")
+	configFile := flag.String("f", "nodes.toml", "Path to the configuration file (only used with -config)")
+	enableViz := flag.Bool("viz", true, "Enable the transaction visualizer")
+
+	// Parse flags
+	flag.Parse()
+
+	return Flags{
+		useConfigFile: *useConfigFile,
+		configFile:    *configFile,
+		enableViz:     *enableViz,
+	}
+}
+
+// runConfigFileMode runs the application in config file mode
+func runConfigFileMode(flags Flags) {
+	// Load configuration and setup environment
+	config, accounts := setupEnvironment(flags.configFile)
+
+	// Print account information
+	printAccountInformation(accounts, config)
+
+	// Check and adjust balances if needed
+	if err := checkAndAdjustBalances(accounts, config); err != nil {
+		log.Fatalf("Failed to handle balance adjustment: %v", err)
+	}
+
+	// Get chain ID
+	nodeURL := config.Nodes.RPC[0] // Use the first node
+	chainID, err := lib.GetChainID(nodeURL)
+	if err != nil {
+		log.Fatalf("Failed to get chain ID: %v", err)
+	}
+
+	// Initialize visualizer if enabled
+	if flags.enableViz {
+		initializeVisualizer(config, chainID, len(accounts))
+	}
+
+	// Initialize multisend distributor if needed
+	distributor := initializeDistributor(config, flags.enableViz)
+
+	// Launch transaction broadcasting goroutines
+	launchTransactionBroadcasters(accounts, config, chainID, distributor, flags.enableViz)
+
+	// Clean up resources
+	cleanupResources(distributor, flags.enableViz)
+}
+
+// setupEnvironment loads the configuration and sets up the environment
+func setupEnvironment(configFile string) (types.Config, []types.Account) {
+	// Load config from file
 	config := types.Config{}
-	if _, err := toml.DecodeFile("nodes.toml", &config); err != nil {
+	if _, err := toml.DecodeFile(configFile, &config); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Always enforce 3000 recipients per multisend when multisend is enabled
+	if config.Multisend {
+		if config.NumMultisend != DefaultMultisendRecipients {
+			log.Printf("⚠️  Overriding NumMultisend from %d to %d for optimal performance",
+				config.NumMultisend, DefaultMultisendRecipients)
+			config.NumMultisend = DefaultMultisendRecipients
+		}
 	}
 
 	mnemonic, err := os.ReadFile("seedphrase")
@@ -43,6 +141,14 @@ func main() {
 	sdkConfig.SetBech32PrefixForConsensusNode(config.Prefix+"valcons", config.Prefix+"valconspub")
 	sdkConfig.Seal()
 
+	// Validate and set positions
+	accounts := generateAccounts(config, mnemonic)
+
+	return config, accounts
+}
+
+// generateAccounts generates accounts based on the configuration
+func generateAccounts(config types.Config, mnemonic []byte) []types.Account {
 	positions := config.Positions
 	const MaxPositions = 100 // Adjust based on requirements
 	if positions <= 0 || positions > MaxPositions {
@@ -51,11 +157,11 @@ func main() {
 	fmt.Println("Positions", positions)
 
 	var accounts []types.Account
-	for i := 0; i < int(positions); i++ {
+	for i := uint(0); i < positions; i++ {
 		position := uint32(i)
 		privKey, pubKey, acctAddress, err := lib.GetPrivKey(config, mnemonic, position)
 		if err != nil {
-			log.Fatalf("Failed to generate keys for position %d: %v", position, err)
+			log.Fatalf("Failed to get private key: %v", err)
 		}
 		if privKey == nil || pubKey == nil || len(acctAddress) == 0 {
 			log.Fatalf("Failed to generate keys for position %d", position)
@@ -68,16 +174,15 @@ func main() {
 		})
 	}
 
-	// **Print addresses and positions at startup**
+	return accounts
+}
+
+// printAccountInformation prints information about accounts and their balances
+func printAccountInformation(accounts []types.Account, config types.Config) {
+	// Print addresses and positions at startup
 	fmt.Println("Addresses and Positions:")
 	for _, acct := range accounts {
 		fmt.Printf("Position %d: Address: %s\n", acct.Position, acct.Address)
-	}
-
-	// Get balances and ensure they are within 10% of each other
-	balances, err := lib.GetBalances(accounts, config)
-	if err != nil {
-		log.Fatalf("Failed to get balances: %v", err)
 	}
 
 	// Print addresses and balances
@@ -90,70 +195,192 @@ func main() {
 		}
 		fmt.Printf("Position %d: Address: %s, Balance: %s %s\n", acct.Position, acct.Address, balance.String(), config.Denom)
 	}
+}
+
+// checkAndAdjustBalances checks if balances are within the threshold and adjusts them if needed
+func checkAndAdjustBalances(accounts []types.Account, config types.Config) error {
+	// Get balances and ensure they are within 10% of each other
+	balances, err := lib.GetBalances(accounts, config)
+	if err != nil {
+		return fmt.Errorf("failed to get balances: %v", err)
+	}
 
 	fmt.Println("balances", balances)
 
 	if !lib.CheckBalancesWithinThreshold(balances, 0.10) {
 		fmt.Println("Account balances are not within 10% of each other. Adjusting balances...")
 		if err := handleBalanceAdjustment(accounts, balances, config); err != nil {
-			log.Fatalf("Failed to handle balance adjustment: %v", err)
+			return err
 		}
 	}
 
-	nodeURL := config.Nodes.RPC[0] // Use the first node
+	return nil
+}
 
-	chainID, err := lib.GetChainID(nodeURL)
-	if err != nil {
-		log.Fatalf("Failed to get chain ID: %v", err)
+// initializeVisualizer initializes the transaction visualizer
+func initializeVisualizer(config types.Config, chainID string, numAccounts int) {
+	fmt.Println("Initializing transaction visualizer...")
+	if err := broadcast.InitVisualizer(config.Nodes.RPC); err != nil {
+		log.Printf("Warning: Failed to initialize visualizer: %v", err)
+	}
+	broadcast.LogVisualizerDebug(fmt.Sprintf("Starting Meteorite test on chain %s with %d accounts",
+		chainID, numAccounts))
+}
+
+// initializeDistributor initializes the MultiSendDistributor if needed
+func initializeDistributor(config types.Config, enableViz bool) *bankmodule.MultiSendDistributor {
+	var distributor *bankmodule.MultiSendDistributor
+
+	// Create a multisend distributor if needed
+	if config.MsgType == "bank_multisend" && config.Multisend {
+		// Initialize the distributor with RPC endpoints from config
+		distributor = bankmodule.NewMultiSendDistributor(config, config.Nodes.RPC)
+		fmt.Printf("Initialized MultiSendDistributor with %d RPC endpoints\n", len(config.Nodes.RPC))
+
+		if enableViz {
+			broadcast.LogVisualizerDebug(fmt.Sprintf("Initialized MultiSendDistributor with %d RPC endpoints",
+				len(config.Nodes.RPC)))
+		}
+
+		// Start a background goroutine to refresh endpoints periodically
+		go func() {
+			for {
+				time.Sleep(15 * time.Minute)
+				distributor.RefreshEndpoints()
+			}
+		}()
 	}
 
-	msgParams := config.MsgParams
+	return distributor
+}
 
-	// Initialize gRPC client
-	//	grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
-	//	if err != nil {
-	//		log.Fatalf("Failed to create gRPC client: %v", err)
-	//	}
-
+// launchTransactionBroadcasters launches goroutines to broadcast transactions
+func launchTransactionBroadcasters(
+	accounts []types.Account,
+	config types.Config,
+	chainID string,
+	distributor *bankmodule.MultiSendDistributor,
+	enableViz bool,
+) {
 	var wg sync.WaitGroup
+
 	for _, account := range accounts {
 		wg.Add(1)
 		go func(acct types.Account) {
 			defer wg.Done()
-
-			// Get account info
-			sequence, accNum, err := lib.GetAccountInfo(acct.Address, config)
-			if err != nil {
-				log.Printf("Failed to get account info for %s: %v", acct.Address, err)
-				return
-			}
-
-			txParams := types.TransactionParams{
-				Config:      config,
-				NodeURL:     nodeURL,
-				ChainID:     chainID,
-				Sequence:    sequence,
-				AccNum:      accNum,
-				PrivKey:     acct.PrivKey,
-				PubKey:      acct.PubKey,
-				AcctAddress: acct.Address,
-				MsgType:     config.MsgType,
-				MsgParams:   msgParams,
-			}
-
-			// Broadcast transactions
-			successfulTxns, failedTxns, responseCodes, _ := broadcast.Loop(txParams, BatchSize, int(acct.Position))
-
-			fmt.Printf("Account %s: Successful transactions: %d, Failed transactions: %d\n", acct.Address, successfulTxns, failedTxns)
-			fmt.Println("Response code breakdown:")
-			for code, count := range responseCodes {
-				percentage := float64(count) / float64(successfulTxns+failedTxns) * 100
-				fmt.Printf("Code %d: %d (%.2f%%)\n", code, count, percentage)
-			}
+			processAccount(acct, config, chainID, distributor, enableViz)
 		}(account)
 	}
 
 	wg.Wait()
+}
+
+// processAccount handles transaction broadcasting for a single account
+func processAccount(
+	acct types.Account,
+	config types.Config,
+	chainID string,
+	distributor *bankmodule.MultiSendDistributor,
+	enableViz bool,
+) {
+	// Get account info
+	sequence, accNum, err := lib.GetAccountInfo(acct.Address, config)
+	if err != nil {
+		log.Printf("Failed to get account info for %s: %v", acct.Address, err)
+		return
+	}
+
+	// Prepare transaction parameters
+	txParams := prepareTransactionParams(acct, config, chainID, sequence, accNum, distributor)
+
+	// Log the start of processing for this account
+	if enableViz {
+		broadcast.LogVisualizerDebug(fmt.Sprintf("Starting transaction broadcasts for account %s (Position %d)",
+			acct.Address, acct.Position))
+	}
+
+	// Broadcast transactions
+	successfulTxs, failedTxs, responseCodes, _ := broadcast.Loop(txParams, BatchSize, int(acct.Position))
+
+	// Print results
+	printResults(acct.Address, successfulTxs, failedTxs, responseCodes)
+}
+
+// prepareTransactionParams prepares the transaction parameters for an account
+func prepareTransactionParams(
+	acct types.Account,
+	config types.Config,
+	chainID string,
+	sequence uint64,
+	accNum uint64,
+	distributor *bankmodule.MultiSendDistributor,
+) types.TransactionParams {
+	var nodeURL string
+	var txMsgType string
+
+	if len(config.Nodes.RPC) > 0 {
+		if distributor != nil {
+			// Use the distributed approach with multiple RPCs
+			nodeURL = distributor.GetNextRPC()
+		} else {
+			// Use the simple approach with the first RPC
+			nodeURL = config.Nodes.RPC[0]
+		}
+	}
+
+	// If no node URL is available, use a default
+	if nodeURL == "" {
+		nodeURL = "http://localhost:26657"
+	}
+
+	// Get message type - either from config or default to bank_send
+	if config.MsgType != "" {
+		txMsgType = config.MsgType
+	} else {
+		txMsgType = "bank_send"
+	}
+
+	// Convert MsgParams struct to map
+	msgParamsMap := types.ConvertMsgParamsToMap(config.MsgParams)
+
+	return types.TransactionParams{
+		Config:      config,
+		NodeURL:     nodeURL,
+		ChainID:     chainID,
+		Sequence:    sequence,
+		AccNum:      accNum,
+		PrivKey:     acct.PrivKey,
+		PubKey:      acct.PubKey,
+		AcctAddress: acct.Address,
+		MsgType:     txMsgType,
+		MsgParams:   msgParamsMap,
+		Distributor: distributor, // Pass distributor for multisend operations
+	}
+}
+
+// printResults prints the results of transaction broadcasting
+func printResults(address string, successfulTxs, failedTxs int, responseCodes map[uint32]int) {
+	fmt.Printf("Account %s: Successful transactions: %d, Failed transactions: %d\n",
+		address, successfulTxs, failedTxs)
+
+	fmt.Println("Response code breakdown:")
+	for code, count := range responseCodes {
+		percentage := float64(count) / float64(successfulTxs+failedTxs) * 100
+		fmt.Printf("Code %d: %d (%.2f%%)\n", code, count, percentage)
+	}
+}
+
+// cleanupResources cleans up resources used by the program
+func cleanupResources(distributor *bankmodule.MultiSendDistributor, enableViz bool) {
+	fmt.Println("All transactions completed. Cleaning up resources...")
+	if distributor != nil {
+		distributor.Cleanup()
+	}
+
+	// Stop the visualizer
+	if enableViz {
+		broadcast.StopVisualizer()
+	}
 }
 
 // adjustBalances transfers funds between accounts to balance their balances within the threshold
@@ -287,46 +514,20 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 }
 
 func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.Int, config types.Config) error {
-	fmt.Printf("\n=== Starting Transfer ===\n")
-	fmt.Printf("Sender Address: %s\n", sender.Address)
-	fmt.Printf("Receiver Address: %s\n", receiverAddress)
-	fmt.Printf("Amount: %s %s\n", amount.String(), config.Denom)
-
-	if sender.PrivKey == nil {
-		return errors.New("sender private key is nil")
-	}
-	if sender.PubKey == nil {
-		return errors.New("sender public key is nil")
-	}
-
-	// Get the sender's account info
-	sequence, accnum, err := lib.GetAccountInfo(sender.Address, config)
-	if err != nil {
-		return fmt.Errorf("failed to get account info for sender %s: %v", sender.Address, err)
-	}
-
-	nodeURL := config.Nodes.RPC[0]
-
-	grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
-	if err != nil {
-		return fmt.Errorf("failed to create gRPC client: %v", err)
-	}
-
+	// Create a transaction params struct for the funds transfer
 	txParams := types.TransactionParams{
 		Config:      config,
-		NodeURL:     nodeURL,
+		NodeURL:     config.Nodes.RPC[0],
 		ChainID:     config.Chain,
-		Sequence:    sequence,
-		AccNum:      accnum,
 		PrivKey:     sender.PrivKey,
 		PubKey:      sender.PubKey,
 		AcctAddress: sender.Address,
 		MsgType:     "bank_send",
-		MsgParams: types.MsgParams{
-			FromAddress: sender.Address,
-			ToAddress:   receiverAddress,
-			Amount:      amount.Int64(),
-			Denom:       config.Denom,
+		MsgParams: map[string]interface{}{
+			"from_address": sender.Address,
+			"to_address":   receiverAddress,
+			"amount":       amount.Int64(),
+			"denom":        config.Denom,
 		},
 	}
 
@@ -335,27 +536,30 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 
 	maxRetries := 3
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		fmt.Printf("Attempt %d to send transaction with sequence %d\n", attempt+1, sequence)
+		fmt.Printf("Attempt %d to send transaction with sequence %d\n", attempt+1, txParams.Sequence)
 
-		resp, _, err := broadcast.SendTransactionViaGRPC(ctx, txParams, sequence, grpcClient)
+		// Create GRPC client with proper error handling
+		grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
+		if err != nil {
+			fmt.Printf("Failed to create GRPC client: %v\n", err)
+			continue
+		}
+
+		resp, _, err := broadcast.SendTransactionViaGRPC(ctx, txParams, txParams.Sequence, grpcClient)
 		if err != nil {
 			fmt.Printf("Transaction failed: %v\n", err)
 
-			// Check if the error is a sequence mismatch error (code 32)
+			// Check if the error is a sequence mismatch error
 			if resp != nil && resp.Code == 32 {
 				expectedSeq, parseErr := lib.ExtractExpectedSequence(resp.RawLog)
-				if parseErr != nil {
-					return fmt.Errorf("failed to parse expected sequence: %v", parseErr)
+				if parseErr == nil {
+					// Update sequence and retry
+					txParams.Sequence = expectedSeq
+					fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", expectedSeq)
+					continue
 				}
-
-				// Update sequence and retry
-				sequence = expectedSeq
-				txParams.Sequence = sequence
-				fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", sequence)
-				continue
 			}
-
-			return fmt.Errorf("failed to send transaction: %v", err)
+			continue
 		}
 
 		if resp.Code != 0 {
@@ -364,20 +568,17 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 			// Check for sequence mismatch error
 			if resp.Code == 32 {
 				expectedSeq, parseErr := lib.ExtractExpectedSequence(resp.RawLog)
-				if parseErr != nil {
-					return fmt.Errorf("failed to parse expected sequence: %v", parseErr)
+				if parseErr == nil {
+					// Update sequence and retry
+					txParams.Sequence = expectedSeq
+					fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", expectedSeq)
+					continue
 				}
-
-				// Update sequence and retry
-				sequence = expectedSeq
-				txParams.Sequence = sequence
-				fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", sequence)
-				continue
 			}
-
 			return fmt.Errorf("transaction failed with code %d: %s", resp.Code, resp.RawLog)
 		}
 
+		// Successfully broadcasted transaction
 		fmt.Printf("-> Successfully transferred %s %s from %s to %s\n",
 			amount.String(), config.Denom, sender.Address, receiverAddress)
 		return nil

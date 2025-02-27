@@ -1,6 +1,7 @@
 package broadcast
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -75,11 +76,14 @@ func Loop(
 	txParams types.TransactionParams,
 	batchSize int,
 	position int,
-) (successfulTxns, failedTxns int, responseCodes map[uint32]int, updatedSequence uint64) {
-	successfulTxns = 0
-	failedTxns = 0
+) (successfulTxs, failedTxs int, responseCodes map[uint32]int, updatedSequence uint64) {
+	successfulTxs = 0
+	failedTxs = 0
 	responseCodes = make(map[uint32]int)
 	sequence := txParams.Sequence
+
+	// Log the start of broadcasting for this position
+	LogVisualizerDebug(fmt.Sprintf("Starting broadcasts for position %d (batchSize: %d)", position, batchSize))
 
 	for i := 0; i < batchSize; i++ {
 		currentSequence := sequence
@@ -90,19 +94,28 @@ func Loop(
 
 		metrics.SignStart = time.Now()
 		metrics.BroadStart = time.Now()
-		resp, _, err := SendTransactionViaRPC(txParams, currentSequence)
+		resp, _, err := SendTransactionViaRPC(context.Background(), txParams, currentSequence)
 		metrics.Complete = time.Now()
+
+		// Calculate total transaction time for visualization
+		txLatency := metrics.Complete.Sub(metrics.PrepStart)
 
 		if err != nil {
 			metrics.LogTiming(currentSequence, false, err)
-			failedTxns++
+			failedTxs++
+
+			// Update visualizer with failed tx
+			UpdateVisualizerStats(0, 1, txLatency)
 
 			if resp != nil && resp.Code == 32 {
 				newSeq, success, newResp := handleSequenceMismatch(txParams, position, sequence, err)
 				sequence = newSeq
 				if success {
-					successfulTxns++
+					successfulTxs++
 					responseCodes[newResp.Code]++
+
+					// Update visualizer with successful tx after sequence recovery
+					UpdateVisualizerStats(1, 0, metrics.Complete.Sub(metrics.PrepStart))
 				}
 				continue
 			}
@@ -110,13 +123,20 @@ func Loop(
 		}
 
 		metrics.LogTiming(currentSequence, true, nil)
-		successfulTxns++
+		successfulTxs++
 		responseCodes[resp.Code]++
 		sequence++
+
+		// Update visualizer with successful tx
+		UpdateVisualizerStats(1, 0, txLatency)
 	}
 
+	// Log the completion of broadcasting for this position
+	LogVisualizerDebug(fmt.Sprintf("Completed broadcasts for position %d: %d successful, %d failed",
+		position, successfulTxs, failedTxs))
+
 	updatedSequence = sequence
-	return successfulTxns, failedTxns, responseCodes, updatedSequence
+	return successfulTxs, failedTxs, responseCodes, updatedSequence
 }
 
 // handleSequenceMismatch handles the case where a transaction fails due to sequence mismatch
@@ -136,7 +156,7 @@ func handleSequenceMismatch(txParams types.TransactionParams, position int, sequ
 
 	metrics.SignStart = time.Now()
 	metrics.BroadStart = time.Now()
-	resp, _, err := SendTransactionViaRPC(txParams, expectedSeq)
+	resp, _, err := SendTransactionViaRPC(context.Background(), txParams, expectedSeq)
 	metrics.Complete = time.Now()
 
 	if err != nil {

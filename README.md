@@ -2,6 +2,50 @@
 
 ![image](https://github.com/user-attachments/assets/baa314c4-4e78-4ca5-ba8c-96380ec49bd1)
 
+```
+                                                              ,|     
+                                                             //|                              ,|
+                                                           //,/                             -~ |
+                                                         // / |                         _-~   /  ,
+                                                       /'/ / /                       _-~   _/_-~ |
+                                                      ( ( / /'                   _ -~     _-~ ,/'
+                                                       \~\/'/|             __--~~__--\ _-~  _/,
+                                                ,,)))))));, \/~-_     __--~~  --~~  __/~  _-~ /
+                                             __))))))))))))));,>/\   /        __--~~  \-~~ _-~
+                                            -\(((((''''(((((((( >~\/     --~~   __--~' _-~ ~|
+                ,----~--.                --==//////=======)))))));'/~     __--~~__--~ /   _-~
+           /////////////////\             -==//////========((((((((/ /     \__~ __--~ ~ /  /
+      //// ////////////////\\\\\,        -==//////=======(((((((( / /       ~-__^-~    /
+     //// ////////////////\\\\\\\\\      -==//////========(((((((/~        /|    ) __--~
+    |//// ////////////////\\\\\\\\\\\\    -==//////=======((((((|~         _-| _/~~/~~~
+    |//// ////~~~~~~~~~~~  ~~~\\\\\\\\\\\\    -==//////=========\|          -~)(_/ |
+    |// //////              \\\\\\\\\\\\\\\     -==////   ~~-  /            /  \_/  \
+    |///                      \\\\\\\\\\\\ \\       '        _~~/         _-~ -~_/  /
+    //                         \\\\\\\\\\\\\\         _     /.-^- __~ ~~ ____--~~ ~ _-~
+                                \\\\\\\\\\\\\\\     /    .-~~-*    __~~ ~~~   ~~--~
+                                 \\\\\\\\\\\\\\\    (        _.-~~~ /       __~-~ ~-_
+                                  \\\\\\\\\\\\\\>__ ~-__.-~~  _-~  /-~-~-_/ /   ~~-~ .
+    ~-_                           /\\\\\\\\\\\\\X\ ~~ \\ ~ ~   -~~~ / ___  /  _-~  /
+      ~-_                      _/^^^^^^^^\ \\\\\\\   ~~\\ \ \  ~~~~  /_-~~/  _-_-~ /     ___---~. 
+        ~-__                _-~ ^^^/^^^^^ \ \\\\\\\    ~-\\ \_\      /~_-~~  / /    _/~       /
+          ~-_ _____________/_<<< XXXX. ^^ .\ _\\\\\\\      \\-\\    |_/_/   /~~    /
+            ~-_/         (_ <<< XXXX / /'/.)-^\\\\\\\       ~-\\   |~|~|  | |    /
+              /  /          (_< XXXX / ///)    ^\\\\\\\        ~-\/~|~|~|_/ /   /      .
+             |  |            ^ XXXX//'/'        ^\\\\\\\         \-|~|~|  /   /     -~_
+            /   /             / XXX/'            ^\\\\\\\         ~-|~|~ |/   /   .-~~^ ^
+           /   /              / X/'               ^\\\\\\\          \|~|  /   /   /      '
+          /   /              /'                   ^^^^^^\\          |~|~/   /   /
+         /   /                                           ^          |~|/   /   /
+        /   /                                                      /~|   /   /
+       /   /                                                       ~^   /   /
+      /   /                                                            /   /
+     /   /           ~-_                                              /   /
+    /   /               ~-_                                          /   /
+   /   /                   ~-_                                      /   /
+  /   /                       ~--__                                /   /
+ /   /                             ~-_                           _/   /
+/   /                                 ~--___                __--~    /
+```
 
 ## Overview
 
@@ -25,18 +69,43 @@ cd meteorite
 go install ./...
 ```
 
-
-
 ## Usage
 
-meteorite comes with pre-configured mainnet settings available in the `configurations` folder. To get started:
+Meteorite is designed with a zero-configuration approach by default. Simply run:
 
-1. Ensure you have a file named `seedphrase` containing your seed phrase.
-2. *(Optional)* Set up your own node with a larger mempool (e.g., 10 GB) that accepts a higher number of transactions (e.g., 50,000).
-3. Edit the `nodes.toml` file to include your RPC URLs and adjust any other necessary settings.
-4. Run `meteorite` in the same directory as your `nodes.toml` and `seedphrase` files.
+```bash
+# Run meteorite with the interactive chain registry (zero-configuration mode)
+meteorite
+```
 
-This will initiate the testing suite with your specified configurations.
+This will:
+1. Download the Cosmos Chain Registry
+2. Present an interactive menu to select a chain
+3. Test RPC endpoints automatically
+4. Set up optimal configuration for testing
+
+For advanced users who want more control, you can use a configuration file:
+
+```bash
+# Run with a specific configuration file
+meteorite -config -f your_config.toml
+```
+
+### Requirements
+
+- Create a file named `seedphrase` containing your seed phrase in the directory where you run meteorite
+- Optionally set up your own node with a larger mempool (e.g., 10 GB) for more thorough testing
+
+## Bank Mode Features
+
+### MultiSend Transactions
+
+Meteorite uses MultiSend transactions with 3000 recipients per transaction by default, which significantly improves testing efficiency.
+
+When using MultiSend:
+- Each transaction sends tokens to 3000 different addresses
+- This creates more complex transaction patterns while using fewer overall transactions
+- Gas is automatically adjusted for the higher requirements of MultiSend
 
 ## Important Notes
 
@@ -72,5 +141,54 @@ Additional information is available at [faddat/fasf-report](https://github.com/f
 ## Contributions and Feedback
 
 We welcome contributions from the community to enhance meteorite's features and capabilities. If you'd like to contribute or have feedback, please open an issue or submit a pull request on GitHub.
+
+## Transaction Visualizer
+
+Meteorite now includes a built-in transaction visualizer that provides real-time insights into transaction processing and network status. The visualizer displays:
+
+- Transaction statistics (total, successful, failed)
+- Transactions per second (TPS) with a live chart
+- Network node status (online, syncing, offline)
+- Mempool state across discovered nodes
+- Latest block height information
+
+### Using the Visualizer
+
+The visualizer is enabled by default and can be toggled with the `-viz` flag:
+
+```bash
+# Run with visualizer (default)
+./meteorite -registry
+
+# Run without visualizer
+./meteorite -registry -viz=false
+```
+
+### Visualizer Output
+
+The visualizer displays information in the terminal:
+
+```
+=== METEORITE TXN STATS ===
+Total Txs: 1250 | Successful: 1230 | Failed: 20 | Success Rate: 98.40%
+TPS: 12.50 | Avg Latency: 125ms | Latest Block: 123456
+
+=== NETWORK NODES ===
+Nodes: 25 | Online: 20 | Syncing: 3 | Offline: 2
+Mempool Txs: 523 | Size: 4.2 MB
+
+=== TPS CHART ===
+▁▂▃▄▅▆▇█▇▆▅▄▃▂▁ (max: 25.0 TPS)
+```
+
+All visualization data is also saved to log files in the `logs/` directory for later analysis.
+
+### Log Files
+
+Log files are created in the `logs/` directory with timestamps in the filename format:
+
+```
+logs/meteorite_viz_2023-05-25_15-30-45.log
+```
 
 ---

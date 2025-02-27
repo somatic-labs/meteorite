@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -147,7 +146,7 @@ func TestTransferFunds(t *testing.T) {
 func TestAdjustBalancesWithSeedPhrase(t *testing.T) {
 	// Create a temporary seed phrase file
 	mnemonic := []byte("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about")
-	tmpfile, err := os.CreateTemp("", "seedphrase")
+	tmpfile, err := os.CreateTemp(t.TempDir(), "seedphrase")
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
@@ -315,7 +314,7 @@ func TestBuildAndSignTransaction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			encodingConfig := params.MakeTestEncodingConfig()
 			_, err := broadcast.BuildAndSignTransaction(ctx, tt.txParams, tt.sequence, encodingConfig)
 			if (err != nil) != tt.wantErr {

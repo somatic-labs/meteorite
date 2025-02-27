@@ -122,6 +122,7 @@ type Config struct {
 	Channel        string      `toml:"channel"`
 	Denom          string      `toml:"denom"`
 	Prefix         string      `toml:"prefix"`
+	AccountPrefix  string      `toml:"account_prefix"` // Bech32 prefix for account addresses (e.g., "cosmos", "osmo", etc.)
 	GasPerByte     int64       `toml:"gas_per_byte"`
 	BaseGas        int64       `toml:"base_gas"`
 	IbCMemo        string      `toml:"ibc_memo"`
@@ -133,11 +134,14 @@ type Config struct {
 	TimeoutHeight  int64       `toml:"timeout_height"`
 	Slip44         int         `toml:"slip44"`
 	MsgType        string      `toml:"msg_type"`
+	Multisend      bool        `toml:"multisend"`     // Whether to use multisend for bank transactions
+	NumMultisend   int         `toml:"num_multisend"` // Number of transactions to include in a multisend
 	MsgParams      MsgParams   `toml:"msg_params"`
 	Gas            GasConfig   `toml:"gas"`
 	Nodes          NodesConfig `toml:"nodes"`
 	BroadcastMode  string      `toml:"broadcast_mode"`
 	Positions      uint        `toml:"positions"`
+	FromAddress    string      `toml:"from_address"` // Default sender address
 }
 
 type MsgParams struct {
@@ -152,16 +156,46 @@ type MsgParams struct {
 	ContractAddr string `toml:"contract_addr"`
 	ExecMsg      string `toml:"exec_msg"`
 	Label        string `toml:"label"`
+	MsgType      string `toml:"msg_type"`
 
-	// Add other message-specific parameters as needed
+	// Gas scaling parameters for different message types
+	GasScalingFactors map[string]float64
+}
+
+// GetGasScalingFactor returns the gas scaling factor for the current message type
+func (m *MsgParams) GetGasScalingFactor() float64 {
+	if m.GasScalingFactors == nil {
+		return 1.0
+	}
+
+	factor, exists := m.GasScalingFactors[m.MsgType]
+	if !exists {
+		return 1.0 // Default scaling factor
+	}
+
+	return factor
+}
+
+// InitDefaultGasScalingFactors sets up default gas scaling factors for common message types
+func (m *MsgParams) InitDefaultGasScalingFactors() {
+	m.GasScalingFactors = map[string]float64{
+		"bank_send":      1.0,  // Base reference
+		"bank_multisend": 1.2,  // Slightly higher for multiple recipients
+		"ibc_transfer":   1.3,  // Higher for cross-chain operations
+		"wasm_execute":   1.5,  // Higher for smart contract execution
+		"wasm_store":     10.0, // Much higher for contract deployment
+	}
 }
 
 type GasConfig struct {
-	Zero      int64 `toml:"zero"`
-	Low       int64 `toml:"low"`
-	Medium    int64 `toml:"medium"`
-	High      int64 `toml:"high"`
-	Precision int64 `toml:"precision"`
+	Zero        int64  `toml:"zero"`
+	Low         int64  `toml:"low"`
+	Medium      int64  `toml:"medium"`
+	High        int64  `toml:"high"`
+	Precision   int64  `toml:"precision"`
+	Denom       string `toml:"denom"`        // Gas price denom
+	Price       string `toml:"price"`        // Gas price as a string
+	AdaptiveGas bool   `toml:"adaptive_gas"` // Whether to use adaptive gas strategy
 }
 
 type NodesConfig struct {
