@@ -57,7 +57,13 @@ func BuildAndSignTransaction(
 	case "ibc_transfer":
 		msg, memo, err = meteoriteibc.CreateIBCTransferMsg(txParams.Config, txParams.AcctAddress, txParams.MsgParams)
 	case "bank_send":
-		msg, memo, err = meteoritebank.CreateBankSendMsg(txParams.Config, txParams.AcctAddress, txParams.MsgParams)
+		if txParams.Config.Multisend {
+			// Use multisend when the feature is enabled in the config
+			msg, memo, err = meteoritebank.CreateBankMultiSendMsg(txParams.Config, txParams.AcctAddress, txParams.MsgParams)
+		} else {
+			// Use regular send otherwise
+			msg, memo, err = meteoritebank.CreateBankSendMsg(txParams.Config, txParams.AcctAddress, txParams.MsgParams)
+		}
 	case "store_code":
 		msg, memo, err = wasm.CreateStoreCodeMsg(txParams.Config, txParams.AcctAddress, txParams.MsgParams)
 	case "instantiate_contract":

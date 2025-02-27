@@ -38,6 +38,28 @@ meteorite comes with pre-configured mainnet settings available in the `configura
 
 This will initiate the testing suite with your specified configurations.
 
+## Bank Mode Features
+
+### MultiSend Transactions
+
+The bank mode now supports MultiSend transactions, which allow you to send tokens to multiple recipients in a single transaction. This can significantly improve transaction throughput and efficiency when testing.
+
+To enable MultiSend:
+
+```toml
+# In your nodes.toml file
+multisend = true
+num_multisend = 10  # Number of recipients per transaction
+```
+
+When `multisend` is enabled, each transaction will send tokens to `num_multisend` different addresses. This feature is particularly useful for:
+
+- Testing chain performance with fewer overall transactions
+- Simulating complex transaction patterns
+- Creating many accounts quickly with a single source of funds
+
+Note that multisend transactions consume more gas than regular send transactions, so you may need to adjust your gas settings accordingly.
+
 ## Important Notes
 
 - **Responsible Use**: meteorite is designed for use on mainnets.  The tokens you own grant you the right to make any valid transaction.  Like any user of any chain, meteorite can only make valid transactions.  

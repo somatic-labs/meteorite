@@ -133,6 +133,8 @@ type Config struct {
 	TimeoutHeight  int64       `toml:"timeout_height"`
 	Slip44         int         `toml:"slip44"`
 	MsgType        string      `toml:"msg_type"`
+	Multisend      bool        `toml:"multisend"`     // Whether to use multisend for bank transactions
+	NumMultisend   int         `toml:"num_multisend"` // Number of transactions to include in a multisend
 	MsgParams      MsgParams   `toml:"msg_params"`
 	Gas            GasConfig   `toml:"gas"`
 	Nodes          NodesConfig `toml:"nodes"`
