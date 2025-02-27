@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/somatic-labs/meteorite/broadcast"
 	"github.com/somatic-labs/meteorite/client"
 	"github.com/somatic-labs/meteorite/lib"
+	"github.com/somatic-labs/meteorite/modes/registry"
 	"github.com/somatic-labs/meteorite/types"
 
 	sdkmath "cosmossdk.io/math"
@@ -26,8 +28,24 @@ const (
 )
 
 func main() {
+	// Define command-line flags
+	useRegistry := flag.Bool("registry", false, "Use the chain registry mode to select a chain to test")
+	configFile := flag.String("f", "nodes.toml", "Path to the configuration file")
+
+	// Parse flags
+	flag.Parse()
+
+	// Check if registry mode is requested
+	if *useRegistry {
+		if err := registry.RunRegistryMode(); err != nil {
+			log.Fatalf("Error in registry mode: %v", err)
+		}
+		return
+	}
+
+	// Regular mode - load config from file
 	config := types.Config{}
-	if _, err := toml.DecodeFile("nodes.toml", &config); err != nil {
+	if _, err := toml.DecodeFile(*configFile, &config); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
@@ -51,11 +69,11 @@ func main() {
 	fmt.Println("Positions", positions)
 
 	var accounts []types.Account
-	for i := 0; i < int(positions); i++ {
+	for i := uint(0); i < positions; i++ {
 		position := uint32(i)
 		privKey, pubKey, acctAddress, err := lib.GetPrivKey(config, mnemonic, position)
 		if err != nil {
-			log.Fatalf("Failed to generate keys for position %d: %v", position, err)
+			log.Fatalf("Failed to get private key: %v", err)
 		}
 		if privKey == nil || pubKey == nil || len(acctAddress) == 0 {
 			log.Fatalf("Failed to generate keys for position %d", position)

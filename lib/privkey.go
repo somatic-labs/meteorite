@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/cosmos/go-bip39"
 	types "github.com/somatic-labs/meteorite/types"
 
 	"github.com/cosmos/cosmos-sdk/crypto/hd"
 	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/go-bip39"
 )
 
 // GetPrivKey derives a private key from a mnemonic at a specific position.
