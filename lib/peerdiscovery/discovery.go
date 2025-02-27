@@ -82,7 +82,7 @@ func (pd *PeerDiscovery) DiscoverPeers(timeout time.Duration) ([]string, error) 
 		fmt.Println("Peer discovery completed successfully.")
 	case <-ctx.Done():
 		// Timeout or cancellation
-		fmt.Println("Peer discovery timed out or was cancelled.")
+		fmt.Println("Peer discovery timed out or was canceled.")
 	}
 
 	// Return the discovered endpoints

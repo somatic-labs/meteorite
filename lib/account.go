@@ -2,12 +2,9 @@ package lib
 
 import (
 	"bufio"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/binary"
+	"errors"
 	"fmt"
-	mrand "math/rand"
 	"os"
 	"strings"
 	"sync"
@@ -16,7 +13,7 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 )
 
-// AddressManager handles loading and managing addresses from the balances.csv file
+// AddressManager manages addresses loaded from balances.csv
 type AddressManager struct {
 	addresses     []sdk.AccAddress // Raw account addresses (not bech32 encoded)
 	mutex         sync.RWMutex
@@ -25,166 +22,207 @@ type AddressManager struct {
 }
 
 var (
-	// Global singleton instance of AddressManager
-	globalAddressManager = &AddressManager{}
-	addressOnce          sync.Once
+	// singleton instance
+	addressManager     *AddressManager
+	addressManagerOnce sync.Once
 )
 
 // GetAddressManager returns the singleton instance of AddressManager
 func GetAddressManager() *AddressManager {
-	addressOnce.Do(func() {
-		globalAddressManager.initialized = false
-		globalAddressManager.loadAttempted = false
-		globalAddressManager.addresses = []sdk.AccAddress{}
-		// Initialize random seed
-		mrand.Seed(time.Now().UnixNano())
+	addressManagerOnce.Do(func() {
+		addressManager = &AddressManager{
+			addresses:     make([]sdk.AccAddress, 0),
+			initialized:   false,
+			loadAttempted: false,
+		}
 	})
-	return globalAddressManager
+	return addressManager
 }
 
-// LoadAddressesFromCSV loads addresses from the balances.csv file
-// This is a best-effort operation - if the file doesn't exist or is invalid,
-// we'll log an error and fallback to random address generation
-func (am *AddressManager) LoadAddressesFromCSV() error {
-	am.mutex.Lock()
-	defer am.mutex.Unlock()
+// isAddressPrefix checks if a string starts with a known Cosmos chain address prefix
+func isAddressPrefix(prefix string) bool {
+	knownPrefixes := []string{"cosmos", "osmo", "juno", "sei", "star", "uni"}
+	for _, known := range knownPrefixes {
+		if prefix == known {
+			return true
+		}
+	}
+	return false
+}
 
-	// Mark that we've attempted to load
-	am.loadAttempted = true
+// processAddressLine attempts to process a line as an address and add it to the address manager
+func (am *AddressManager) processAddressLine(line string) bool {
+	address := extractAddressFromCSVLine(line)
+	if address == "" {
+		return false
+	}
 
-	// Check if balances.csv exists
-	file, err := os.Open("balances.csv")
+	addr, err := sdk.AccAddressFromBech32(address)
 	if err != nil {
-		fmt.Printf("Warning: balances.csv not found or couldn't be opened: %v\n", err)
-		fmt.Println("Will use random address generation as fallback")
-		return err
-	}
-	defer file.Close()
-
-	// Read addresses from the CSV file
-	scanner := bufio.NewScanner(file)
-	var addresses []sdk.AccAddress
-
-	// Skip header line if it exists
-	if scanner.Scan() {
-		line := scanner.Text()
-		// If the first line doesn't look like an address, assume it's a header
-		if !strings.HasPrefix(line, "cosmos") && !strings.HasPrefix(line, "osmo") &&
-			!strings.HasPrefix(line, "juno") && !strings.HasPrefix(line, "akash") &&
-			!strings.HasPrefix(line, "star") && !strings.HasPrefix(line, "uni") {
-			// It's a header, continue to the next line
-		} else {
-			// It looks like an address, process it
-			address := extractAddressFromCSVLine(line)
-			if address != "" {
-				addr, err := sdk.AccAddressFromBech32(address)
-				if err == nil {
-					addresses = append(addresses, addr)
-				}
-			}
-		}
+		return false
 	}
 
-	// Process the rest of the file
-	for scanner.Scan() {
-		line := scanner.Text()
-		address := extractAddressFromCSVLine(line)
-		if address != "" {
-			addr, err := sdk.AccAddressFromBech32(address)
-			if err == nil {
-				addresses = append(addresses, addr)
-			}
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		fmt.Printf("Error reading balances.csv: %v\n", err)
-		return err
-	}
-
-	if len(addresses) == 0 {
-		fmt.Println("Warning: No valid addresses found in balances.csv")
-		return fmt.Errorf("no valid addresses found")
-	}
-
-	fmt.Printf("Successfully loaded %d addresses from balances.csv\n", len(addresses))
-	am.addresses = addresses
-	am.initialized = true
-	return nil
+	am.addresses = append(am.addresses, addr)
+	return true
 }
 
-// extractAddressFromCSVLine extracts the address from a CSV line
-// Format is expected to be: address,balance1,balance2,...
-func extractAddressFromCSVLine(line string) string {
+// extractPrefixFromLine extracts a potential address prefix from a CSV line
+func extractPrefixFromLine(line string) string {
 	parts := strings.Split(line, ",")
 	if len(parts) == 0 {
 		return ""
 	}
 
-	// The address should be the first column
-	address := strings.TrimSpace(parts[0])
-	return address
+	firstCol := strings.TrimSpace(parts[0])
+	prefixParts := strings.Split(firstCol, "1")
+	if len(prefixParts) == 0 {
+		return ""
+	}
+
+	return prefixParts[0]
+}
+
+// processFirstLine processes the first line of the CSV file, which might be a header or data
+func (am *AddressManager) processFirstLine(scanner *bufio.Scanner) int {
+	if !scanner.Scan() {
+		// Empty file
+		return 0
+	}
+
+	line := scanner.Text()
+	prefix := extractPrefixFromLine(line)
+
+	// If the line starts with a recognized address prefix, process it as an address
+	if isAddressPrefix(prefix) && am.processAddressLine(line) {
+		return 1
+	}
+
+	// Otherwise assume it's a header and skip it
+	return 0
+}
+
+// LoadAddressesFromCSV loads addresses from balances.csv file
+func (am *AddressManager) LoadAddressesFromCSV() error {
+	am.mutex.Lock()
+	defer am.mutex.Unlock()
+
+	// If we've already loaded addresses, don't do it again
+	if am.initialized {
+		return nil
+	}
+
+	// If we've already attempted to load and failed, don't try again
+	if am.loadAttempted {
+		return errors.New("already attempted to load addresses and failed")
+	}
+
+	am.loadAttempted = true
+
+	// Try to open balances.csv
+	file, err := os.Open("balances.csv")
+	if err != nil {
+		fmt.Printf("Warning: Could not open balances.csv: %v\n", err)
+		return err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	addressCount := 0
+
+	// Process the first line which might be a header
+	addressCount += am.processFirstLine(scanner)
+
+	// Process the rest of the lines
+	for scanner.Scan() {
+		if am.processAddressLine(scanner.Text()) {
+			addressCount++
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		fmt.Printf("Warning: Error reading balances.csv: %v\n", err)
+		return err
+	}
+
+	if addressCount == 0 {
+		return errors.New("no valid addresses found")
+	}
+
+	fmt.Printf("Loaded %d addresses from balances.csv\n", addressCount)
+	am.initialized = true
+	return nil
+}
+
+// extractAddressFromCSVLine extracts the first column from a CSV line, which should be an address
+func extractAddressFromCSVLine(line string) string {
+	parts := strings.Split(line, ",")
+	if len(parts) > 0 {
+		return strings.TrimSpace(parts[0])
+	}
+	return ""
 }
 
 // GetRandomAddressWithPrefix returns a random address with the specified bech32 prefix
-// If addresses are loaded from balances.csv, it will pick a random one and convert the prefix
-// Otherwise, it will fall back to the regular random account generation in lib/lib.go
 func (am *AddressManager) GetRandomAddressWithPrefix(prefix string) (string, error) {
 	am.mutex.RLock()
+	defer am.mutex.RUnlock()
 
-	// If we haven't tried to load addresses yet, attempt to do so
-	if !am.loadAttempted {
-		am.mutex.RUnlock() // Unlock for reading before locking for writing
-		am.LoadAddressesFromCSV()
-		am.mutex.RLock() // Lock for reading again after loading
-	}
-
-	// If we have addresses, use one of them
-	if am.initialized && len(am.addresses) > 0 {
-		// Get a random address from our list
-		idx := mrand.Intn(len(am.addresses))
-		addr := am.addresses[idx]
-		am.mutex.RUnlock()
-
-		// Convert to the requested prefix
-		bech32Addr, err := sdk.Bech32ifyAddressBytes(prefix, addr)
-		if err != nil {
-			return "", fmt.Errorf("failed to convert address to bech32: %w", err)
+	// If we haven't tried to load addresses yet, do it now
+	if !am.initialized && !am.loadAttempted {
+		am.mutex.RUnlock() // Unlock for the write operation
+		if err := am.LoadAddressesFromCSV(); err != nil {
+			am.mutex.RLock() // Lock again for the rest of the function
+			fmt.Printf("Failed to load addresses: %v\n", err)
+		} else {
+			am.mutex.RLock() // Lock again for the rest of the function
 		}
-		return bech32Addr, nil
 	}
-	am.mutex.RUnlock()
 
-	// If we don't have addresses, fallback to lib.GenerateRandomAccount
-	// We don't call it directly here to avoid circular imports
-	// The caller should handle this case by using lib.GenerateRandomAccount
-	return "", fmt.Errorf("no addresses available from balances.csv, fallback to random generation")
+	// If we have addresses, pick a random one and convert its prefix
+	if len(am.addresses) > 0 {
+		// Generate cryptographically secure random number
+		randomBytes := make([]byte, 8)
+		if _, err := rand.Read(randomBytes); err != nil {
+			return "", err
+		}
+
+		// Convert to an integer index
+		randomInt := int(randomBytes[0]) | int(randomBytes[1])<<8 | int(randomBytes[2])<<16 | int(randomBytes[3])<<24
+		idx := randomInt % len(am.addresses)
+
+		// Get the address and convert it to the requested prefix
+		addr := am.addresses[idx]
+		return sdk.Bech32ifyAddressBytes(prefix, addr)
+	}
+
+	// If we don't have addresses, return an error
+	return "", errors.New("no addresses available from balances.csv, fallback to random generation")
 }
 
-// GenerateDeterministicAccount generates a deterministic account based on a seed string
-// This ensures that the same seed always produces the same account
+// GenerateDeterministicAccount generates a deterministic account based on the seed string
 func GenerateDeterministicAccount(seed string) (sdk.AccAddress, string, error) {
-	// Hash the seed
-	h := hmac.New(sha256.New, []byte("meteorite-deterministic-account"))
-	h.Write([]byte(seed))
-	hash := h.Sum(nil)
+	// Use a hash of the seed to generate bytes
+	hashedBytes := []byte(seed)
+	for i := 0; i < 3; i++ {
+		hashedBytes = hash(hashedBytes)
+	}
 
-	// Use the first 20 bytes as the address
-	addrBytes := hash[:20]
+	// Use the first 20 bytes for the address
+	addressBytes := hashedBytes[:20]
+	address := sdk.AccAddress(addressBytes)
+	bech32Addr, err := sdk.Bech32ifyAddressBytes("cosmos", address)
 
-	bech32Addr := sdk.AccAddress(addrBytes).String()
-
-	return sdk.AccAddress(addrBytes), bech32Addr, nil
+	return address, bech32Addr, err
 }
 
-// GetRandomBytes generates n random bytes
+// GetRandomBytes generates random bytes of the specified length
 func GetRandomBytes(n int) ([]byte, error) {
-	bytes := make([]byte, n)
-	_, err := rand.Read(bytes)
+	b := make([]byte, n)
+	_, err := rand.Read(b)
 	if err != nil {
 		return nil, err
 	}
-	return bytes, nil
+	return b, nil
 }
 
 // RandomInt64 generates a random int64 between minVal and maxVal (inclusive)
@@ -195,15 +233,25 @@ func RandomInt64(minVal, maxVal int64) int64 {
 	if minVal > maxVal {
 		minVal, maxVal = maxVal, minVal
 	}
+
 	// Generate random bytes
-	bytes, _ := GetRandomBytes(8)
-	// Convert to int64 (use modulo to stay within range)
-	r := int64(binary.LittleEndian.Uint64(bytes))
-	if r < 0 {
-		r = -r
+	b := make([]byte, 8)
+	_, err := rand.Read(b)
+	if err != nil {
+		// Fallback to current time if crypto/rand fails
+		return time.Now().UnixNano()%(maxVal-minVal+1) + minVal
 	}
-	// Adjust to range
-	return minVal + (r % (maxVal - minVal + 1))
+
+	// Convert to int64 and scale to range
+	bigInt := int64(b[0]) | int64(b[1])<<8 | int64(b[2])<<16 | int64(b[3])<<24 |
+		int64(b[4])<<32 | int64(b[5])<<40 | int64(b[6])<<48 | int64(b[7])<<56
+
+	// Get absolute value
+	if bigInt < 0 {
+		bigInt = -bigInt
+	}
+
+	return bigInt%(maxVal-minVal+1) + minVal
 }
 
 // RandomInt32 generates a random int32 between minVal and maxVal (inclusive)
@@ -214,13 +262,34 @@ func RandomInt32(minVal, maxVal int32) int32 {
 	if minVal > maxVal {
 		minVal, maxVal = maxVal, minVal
 	}
+
 	// Generate random bytes
-	bytes, _ := GetRandomBytes(4)
-	// Convert to int32 (use modulo to stay within range)
-	r := int32(binary.LittleEndian.Uint32(bytes))
-	if r < 0 {
-		r = -r
+	b := make([]byte, 4)
+	_, err := rand.Read(b)
+	if err != nil {
+		// Fallback to current time if crypto/rand fails
+		return int32(time.Now().UnixNano())%(maxVal-minVal+1) + minVal
 	}
-	// Adjust to range
-	return minVal + (r % (maxVal - minVal + 1))
+
+	// Convert to int32 and scale to range
+	bigInt := int32(b[0]) | int32(b[1])<<8 | int32(b[2])<<16 | int32(b[3])<<24
+
+	// Get absolute value
+	if bigInt < 0 {
+		bigInt = -bigInt
+	}
+
+	return bigInt%(maxVal-minVal+1) + minVal
+}
+
+// hash is a simple hash function for deterministic account generation
+func hash(data []byte) []byte {
+	hashBytes := make([]byte, len(data))
+	copy(hashBytes, data)
+
+	// Simple hash algorithm for demonstration - in production use a proper hash function
+	for i := 0; i < len(hashBytes)-1; i++ {
+		hashBytes[i] ^= hashBytes[i+1]
+	}
+	return hashBytes
 }

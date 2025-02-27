@@ -63,7 +63,9 @@ type Visualizer struct {
 // New creates a new visualizer instance
 func New(endpoints []string) *Visualizer {
 	// Create logs directory if it doesn't exist
-	os.MkdirAll("logs", 0755)
+	if err := os.MkdirAll("logs", 0o755); err != nil {
+		fmt.Printf("Warning: failed to create logs directory: %v\n", err)
+	}
 
 	// Create a log file with timestamp
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
@@ -208,9 +210,14 @@ func (v *Visualizer) UpdateMempoolStats(nodeURL string, txCount int, txBytes int
 }
 
 // UpdateNodeStatus updates status information for a node
-func (v *Visualizer) UpdateNodeStatus(nodeURL string, height int64, blockTime time.Time,
-	peerCount int, catchingUp bool, validatorAddress string) {
-
+func (v *Visualizer) UpdateNodeStatus(
+	nodeURL string,
+	height int64,
+	blockTime time.Time,
+	peerCount int,
+	catchingUp bool,
+	validatorAddress string,
+) {
 	v.statsMutex.Lock()
 	defer v.statsMutex.Unlock()
 
@@ -387,8 +394,8 @@ func (v *Visualizer) printStats() {
 	v.statsMutex.RLock()
 	defer v.statsMutex.RUnlock()
 
-	// Clear screen (not compatible with all terminals)
-	//fmt.Print("\033[H\033[2J")
+	// Clear screen (uncomment if needed)
+	// fmt.Print("\033[H\033[2J")
 
 	// Main title
 	greenBold := color.New(color.FgGreen, color.Bold).SprintFunc()
@@ -414,11 +421,12 @@ func (v *Visualizer) printStats() {
 	// Count node states
 	online, syncing, offline := 0, 0, 0
 	for _, node := range v.nodeStatus {
-		if !node.IsOnline {
+		switch {
+		case !node.IsOnline:
 			offline++
-		} else if node.CatchingUp {
+		case node.CatchingUp:
 			syncing++
-		} else {
+		default:
 			online++
 		}
 	}
@@ -447,7 +455,7 @@ func (v *Visualizer) printStats() {
 	// Draw a mini TPS chart using ASCII
 	fmt.Println("")
 	fmt.Println(greenBold("=== TPS CHART ==="))
-	drawAsciiChart(v.chartData)
+	drawASCIIChart(v.chartData)
 	fmt.Println("")
 
 	// Log to file
@@ -474,17 +482,18 @@ func calcSuccessRate(stats *TransactionStats) float64 {
 
 // formatBytes formats bytes into a human-readable string
 func formatBytes(bytes int64) string {
-	if bytes < 1024 {
+	switch {
+	case bytes < 1024:
 		return fmt.Sprintf("%d B", bytes)
-	} else if bytes < 1024*1024 {
+	case bytes < 1024*1024:
 		return fmt.Sprintf("%.1f KB", float64(bytes)/1024)
-	} else {
+	default:
 		return fmt.Sprintf("%.1f MB", float64(bytes)/(1024*1024))
 	}
 }
 
-// drawAsciiChart draws a simple ASCII chart of TPS data
-func drawAsciiChart(data []float64) {
+// drawASCIIChart draws a simple ASCII chart of TPS data
+func drawASCIIChart(data []float64) {
 	if len(data) == 0 {
 		fmt.Println("No data available yet.")
 		return

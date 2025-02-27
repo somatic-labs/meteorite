@@ -129,39 +129,56 @@ func NewRegistry(repoPath string) *Registry {
 	}
 }
 
-// Download downloads the chain registry
-func (r *Registry) Download() error {
-	// Check if directory exists
-	if _, err := os.Stat(r.repoPath); os.IsNotExist(err) {
-		// Clone the repository
-		fmt.Printf("Cloning chain registry to %s...\n", r.repoPath)
-		_, err := git.PlainClone(r.repoPath, false, &git.CloneOptions{
-			URL:      ChainRegistryURL,
-			Progress: os.Stdout,
-		})
-		if err != nil {
-			return fmt.Errorf("error cloning repository: %w", err)
-		}
-	} else {
-		// Pull the latest changes
-		fmt.Printf("Pulling latest changes to %s...\n", r.repoPath)
-		repo, err := git.PlainOpen(r.repoPath)
-		if err != nil {
-			return fmt.Errorf("error opening repository: %w", err)
-		}
+// cloneRegistry clones the chain registry repository
+func (r *Registry) cloneRegistry() error {
+	fmt.Printf("Cloning chain registry to %s...\n", r.repoPath)
+	_, err := git.PlainClone(r.repoPath, false, &git.CloneOptions{
+		URL:      ChainRegistryURL,
+		Progress: os.Stdout,
+	})
+	if err != nil {
+		return fmt.Errorf("error cloning repository: %w", err)
+	}
+	return nil
+}
 
-		w, err := repo.Worktree()
-		if err != nil {
-			return fmt.Errorf("error getting worktree: %w", err)
-		}
+// updateRegistry pulls the latest changes to the registry
+func (r *Registry) updateRegistry() error {
+	fmt.Printf("Pulling latest changes to %s...\n", r.repoPath)
+	repo, err := git.PlainOpen(r.repoPath)
+	if err != nil {
+		return fmt.Errorf("error opening repository: %w", err)
+	}
 
-		err = w.Pull(&git.PullOptions{})
-		if err != nil && err != git.NoErrAlreadyUpToDate {
-			return fmt.Errorf("error pulling repository: %w", err)
-		}
+	// Get worktree
+	w, err := repo.Worktree()
+	if err != nil {
+		return fmt.Errorf("error getting worktree: %w", err)
+	}
+
+	// Pull
+	err = w.Pull(&git.PullOptions{
+		RemoteName: "origin",
+		Progress:   os.Stdout,
+	})
+	if err != nil && err != git.NoErrAlreadyUpToDate {
+		return fmt.Errorf("error pulling repository: %w", err)
 	}
 
 	return nil
+}
+
+// Download downloads the chain registry
+func (r *Registry) Download() error {
+	// Check if directory exists
+	_, err := os.Stat(r.repoPath)
+	if os.IsNotExist(err) {
+		// Clone the repository if it doesn't exist
+		return r.cloneRegistry()
+	}
+
+	// Directory exists, update the registry
+	return r.updateRegistry()
 }
 
 // LoadChains loads all chains from the registry

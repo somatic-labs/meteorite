@@ -100,6 +100,26 @@ func (m *MultiSendDistributor) GetNextSeed() int64 {
 	return seed
 }
 
+// getOrCreateToAddress returns a recipient address or creates a deterministic one from a seed
+func getOrCreateToAddress(specifiedAddress, randomSeed string) (sdk.AccAddress, error) {
+	if specifiedAddress != "" {
+		toAccAddress, err := sdk.AccAddressFromBech32(specifiedAddress)
+		// If address is valid, use it
+		if err == nil {
+			return toAccAddress, nil
+		}
+		// Otherwise fall through to deterministic generation
+	}
+
+	// Generate a deterministic address from the seed
+	toAccAddress, _, err := lib.GenerateDeterministicAccount(randomSeed)
+	if err != nil {
+		return nil, fmt.Errorf("error generating deterministic account: %w", err)
+	}
+
+	return toAccAddress, nil
+}
+
 // CreateDistributedMultiSendMsg creates a multisend message with a unique set of recipients
 // based on the RPC endpoint it will be sent to. This ensures different mempools across nodes.
 func (m *MultiSendDistributor) CreateDistributedMultiSendMsg(
@@ -134,25 +154,10 @@ func (m *MultiSendDistributor) CreateDistributedMultiSendMsg(
 		// Generate a deterministic seed for this recipient
 		randomSeed := fmt.Sprintf("%d-%d", seed, i)
 
-		var toAccAddress sdk.AccAddress
-		var err error
-
-		// Use the specified recipient if provided, otherwise get random addresses
-		if msgParams.ToAddress != "" {
-			toAccAddress, err = sdk.AccAddressFromBech32(msgParams.ToAddress)
-			// If address is invalid, fall back to deterministic generation
-			if err != nil {
-				toAccAddress, _, err = lib.GenerateDeterministicAccount(randomSeed)
-				if err != nil {
-					return nil, "", fmt.Errorf("error generating deterministic account: %w", err)
-				}
-			}
-		} else {
-			// No address specified, generate a deterministic one
-			toAccAddress, _, err = lib.GenerateDeterministicAccount(randomSeed)
-			if err != nil {
-				return nil, "", fmt.Errorf("error generating deterministic account: %w", err)
-			}
+		// Get or create recipient address
+		toAccAddress, err := getOrCreateToAddress(msgParams.ToAddress, randomSeed)
+		if err != nil {
+			return nil, "", err
 		}
 
 		// Add this recipient to the outputs
