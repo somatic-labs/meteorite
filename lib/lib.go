@@ -666,14 +666,24 @@ func getNestedArray(data map[string]interface{}, keys ...string) ([]interface{},
 }
 
 func CheckBalancesWithinThreshold(balances map[string]sdkmath.Int, threshold float64) bool {
+	// Early return if no balances
 	if len(balances) == 0 {
 		return false
 	}
 
+	// We'll track valid balances to ensure we have at least one
+	validBalanceCount := 0
 	var minBalance, maxBalance sdkmath.Int
 	first := true
 
 	for _, balance := range balances {
+		// Skip nil balances
+		if balance.IsNil() {
+			continue
+		}
+
+		validBalanceCount++
+
 		if first {
 			minBalance = balance
 			maxBalance = balance
@@ -687,6 +697,11 @@ func CheckBalancesWithinThreshold(balances map[string]sdkmath.Int, threshold flo
 		if balance.GT(maxBalance) {
 			maxBalance = balance
 		}
+	}
+
+	// If we didn't find any valid balances, return false
+	if validBalanceCount == 0 {
+		return false
 	}
 
 	// Skip check if all balances are below minimum threshold

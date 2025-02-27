@@ -537,27 +537,6 @@ func checkAndAdjustBalances(accounts []types.Account, config types.Config) error
 
 	fmt.Println("balances", balances)
 
-	if !lib.CheckBalancesWithinThreshold(balances, 0.10) {
-		fmt.Println("⚠️ Account balances are not within 10% of each other. Adjusting balances...")
-		if err := handleBalanceAdjustment(accounts, balances, config); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// handleBalanceAdjustment handles the balance adjustment between accounts
-func handleBalanceAdjustment(accounts []types.Account, balances map[string]sdkmath.Int, config types.Config) error {
-	if err := adjustBalances(accounts, balances, config); err != nil {
-		return fmt.Errorf("failed to adjust balances: %v", err)
-	}
-
-	balances, err := lib.GetBalances(accounts, config)
-	if err != nil {
-		return fmt.Errorf("failed to get balances after adjustment: %v", err)
-	}
-
 	if !shouldProceedWithBalances(balances) {
 		return errors.New("account balances are still not within threshold after adjustment")
 	}
@@ -565,29 +544,37 @@ func handleBalanceAdjustment(accounts []types.Account, balances map[string]sdkma
 	return nil
 }
 
-// adjustBalances transfers funds between accounts to balance their balances within the threshold
-func adjustBalances(_ []types.Account, balances map[string]sdkmath.Int, config types.Config) error {
-	// Implementation from main.go
-	// This function would need to be copied from main.go
-	return nil
-}
-
 // shouldProceedWithBalances checks if the balances are acceptable to proceed
 func shouldProceedWithBalances(balances map[string]sdkmath.Int) bool {
+	// Check if we even have any balances to process
+	if len(balances) == 0 {
+		fmt.Println("⚠️ No balances to process, proceeding with caution")
+		return true
+	}
+
 	if lib.CheckBalancesWithinThreshold(balances, 0.15) {
 		fmt.Println("✅ Balances successfully adjusted within acceptable range")
 		return true
 	}
 
-	var maxBalance sdkmath.Int
+	// Initialize maxBalance to zero
+	maxBalance := sdkmath.ZeroInt()
+
+	// Find max balance with nil check
 	for _, balance := range balances {
+		// Skip nil balances
+		if balance.IsNil() {
+			continue
+		}
+
 		if balance.GT(maxBalance) {
 			maxBalance = balance
 		}
 	}
 
 	minSignificantBalance := sdkmath.NewInt(1000000)
-	if maxBalance.LT(minSignificantBalance) {
+	// Handle the case where maxBalance might still be zero
+	if maxBalance.IsZero() || maxBalance.LT(minSignificantBalance) {
 		fmt.Println("✅ Remaining balance differences are below minimum threshold, proceeding")
 		return true
 	}
