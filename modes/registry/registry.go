@@ -2,6 +2,7 @@ package registry
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/somatic-labs/meteorite/broadcast"
+	"github.com/somatic-labs/meteorite/client"
 	"github.com/somatic-labs/meteorite/lib"
 	"github.com/somatic-labs/meteorite/lib/chainregistry"
 	bankmodule "github.com/somatic-labs/meteorite/modules/bank"
@@ -537,11 +539,258 @@ func checkAndAdjustBalances(accounts []types.Account, config types.Config) error
 
 	fmt.Println("balances", balances)
 
+	// Check if balances need adjustment
+	if lib.CheckBalancesWithinThreshold(balances, 0.15) {
+		fmt.Println("✅ Balances already within acceptable range")
+		return nil
+	}
+
+	fmt.Println("⚠️ Account balances are not within threshold, attempting to adjust...")
+
+	// Attempt to adjust balances
+	if err := adjustBalances(accounts, balances, config); err != nil {
+		return fmt.Errorf("failed to adjust balances: %v", err)
+	}
+
+	// Re-fetch balances after adjustment
+	balances, err = lib.GetBalances(accounts, config)
+	if err != nil {
+		return fmt.Errorf("failed to get balances after adjustment: %v", err)
+	}
+
 	if !shouldProceedWithBalances(balances) {
 		return errors.New("account balances are still not within threshold after adjustment")
 	}
 
 	return nil
+}
+
+// adjustBalances transfers funds between accounts to balance their balances within the threshold
+func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, config types.Config) error {
+	if len(accounts) == 0 {
+		return errors.New("no accounts provided for balance adjustment")
+	}
+
+	// Calculate the total balance
+	totalBalance := sdkmath.ZeroInt()
+	for _, balance := range balances {
+		if !balance.IsNil() {
+			totalBalance = totalBalance.Add(balance)
+		}
+	}
+	fmt.Printf("Total Balance across all accounts: %s %s\n", totalBalance.String(), config.Denom)
+
+	if totalBalance.IsZero() {
+		return errors.New("total balance is zero, nothing to adjust")
+	}
+
+	// Count valid accounts (with non-nil balances)
+	validAccountCount := 0
+	for _, balance := range balances {
+		if !balance.IsNil() && !balance.IsZero() {
+			validAccountCount++
+		}
+	}
+
+	// If no valid accounts with balances, we can't proceed
+	if validAccountCount == 0 {
+		return errors.New("no accounts with valid balances found")
+	}
+
+	numAccounts := sdkmath.NewInt(int64(len(accounts)))
+	averageBalance := totalBalance.Quo(numAccounts)
+	fmt.Printf("Number of Accounts: %d, Average Balance per account: %s %s\n",
+		numAccounts.Int64(), averageBalance.String(), config.Denom)
+
+	// Define minimum transfer amount to avoid dust transfers
+	minTransfer := sdkmath.NewInt(1000000) // Adjust based on your token's decimal places
+	fmt.Printf("Minimum Transfer Amount to avoid dust: %s %s\n", minTransfer.String(), config.Denom)
+
+	// Create a slice to track balances that need to send or receive funds
+	type balanceAdjustment struct {
+		Account types.Account
+		Amount  sdkmath.Int // Positive if needs to receive, negative if needs to send
+	}
+	var adjustments []balanceAdjustment
+
+	threshold := averageBalance.MulRaw(10).QuoRaw(100) // threshold = averageBalance * 10 / 100
+	fmt.Printf("Balance Threshold for adjustments (10%% of average balance): %s %s\n", threshold.String(), config.Denom)
+
+	for _, acct := range accounts {
+		currentBalance := balances[acct.Address]
+		// Skip accounts with nil balances
+		if currentBalance.IsNil() {
+			fmt.Printf("Account %s has nil balance, skipping\n", acct.Address)
+			continue
+		}
+
+		difference := averageBalance.Sub(currentBalance)
+
+		fmt.Printf("Account %s - Current Balance: %s %s, Difference from average: %s %s\n",
+			acct.Address, currentBalance.String(), config.Denom, difference.String(), config.Denom)
+
+		// Only consider adjustments exceeding the threshold and minimum transfer amount
+		if difference.Abs().GT(threshold) && difference.Abs().GT(minTransfer) {
+			adjustments = append(adjustments, balanceAdjustment{
+				Account: acct,
+				Amount:  difference,
+			})
+			fmt.Printf("-> Account %s requires adjustment of %s %s\n", acct.Address, difference.String(), config.Denom)
+		} else {
+			fmt.Printf("-> Account %s is within balance threshold, no adjustment needed\n", acct.Address)
+		}
+	}
+
+	// Separate adjustments into senders (negative amounts) and receivers (positive amounts)
+	var senders, receivers []balanceAdjustment
+	for _, adj := range adjustments {
+		if adj.Amount.IsNegative() {
+			// Check if the account has enough balance to send
+			accountBalance := balances[adj.Account.Address]
+			fmt.Printf("Sender Account %s - Balance: %s %s, Surplus: %s %s\n",
+				adj.Account.Address, accountBalance.String(), config.Denom, adj.Amount.Abs().String(), config.Denom)
+
+			// Ensure account has enough balance to send
+			if accountBalance.GT(adj.Amount.Abs()) {
+				senders = append(senders, adj)
+			} else {
+				fmt.Printf("-> Account %s doesn't have enough balance to be a sender\n", adj.Account.Address)
+			}
+		} else if adj.Amount.IsPositive() {
+			fmt.Printf("Receiver Account %s - Needs: %s %s\n",
+				adj.Account.Address, adj.Amount.String(), config.Denom)
+			receivers = append(receivers, adj)
+		}
+	}
+
+	// Perform transfers from senders to receivers
+	for _, sender := range senders {
+		// The total amount the sender needs to transfer (their surplus)
+		amountToSend := sender.Amount.Abs()
+		fmt.Printf("\nStarting transfers from Sender Account %s - Total Surplus to send: %s %s\n",
+			sender.Account.Address, amountToSend.String(), config.Denom)
+
+		// Iterate over the receivers who need funds
+		for i := range receivers {
+			receiver := &receivers[i]
+
+			// Check if the receiver still needs funds
+			if receiver.Amount.GT(sdkmath.ZeroInt()) {
+				// Determine the amount to transfer:
+				// It's the minimum of what the sender can send and what the receiver needs
+				transferAmount := sdkmath.MinInt(amountToSend, receiver.Amount)
+
+				fmt.Printf("Transferring %s %s from %s to %s\n",
+					transferAmount.String(), config.Denom, sender.Account.Address, receiver.Account.Address)
+
+				// Transfer funds from the sender to the receiver
+				err := TransferFunds(sender.Account, receiver.Account.Address, transferAmount, config)
+				if err != nil {
+					return fmt.Errorf("failed to transfer funds from %s to %s: %v",
+						sender.Account.Address, receiver.Account.Address, err)
+				}
+
+				fmt.Printf("-> Successfully transferred %s %s from %s to %s\n",
+					transferAmount.String(), config.Denom, sender.Account.Address, receiver.Account.Address)
+
+				// Update the sender's remaining amount to send
+				amountToSend = amountToSend.Sub(transferAmount)
+				fmt.Printf("Sender %s remaining surplus to send: %s %s\n",
+					sender.Account.Address, amountToSend.String(), config.Denom)
+
+				// Update the receiver's remaining amount to receive
+				receiver.Amount = receiver.Amount.Sub(transferAmount)
+				fmt.Printf("Receiver %s remaining amount needed: %s %s\n",
+					receiver.Account.Address, receiver.Amount.String(), config.Denom)
+
+				// If the sender has sent all their surplus, move to the next sender
+				if amountToSend.IsZero() {
+					fmt.Printf("Sender %s has sent all surplus funds.\n", sender.Account.Address)
+					break
+				}
+			} else {
+				fmt.Printf("Receiver %s no longer needs funds.\n", receiver.Account.Address)
+			}
+		}
+	}
+
+	fmt.Println("\nBalance adjustment complete.")
+	return nil
+}
+
+// TransferFunds transfers funds from a sender account to a receiver address
+func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.Int, config types.Config) error {
+	// Create a transaction params struct for the funds transfer
+	txParams := types.TransactionParams{
+		Config:      config,
+		NodeURL:     config.Nodes.RPC[0],
+		ChainID:     config.Chain,
+		PrivKey:     sender.PrivKey,
+		PubKey:      sender.PubKey,
+		AcctAddress: sender.Address,
+		MsgType:     "bank_send",
+		MsgParams: map[string]interface{}{
+			"from_address": sender.Address,
+			"to_address":   receiverAddress,
+			"amount":       amount.Int64(),
+			"denom":        config.Denom,
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	maxRetries := 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		fmt.Printf("Attempt %d to send transaction with sequence %d\n", attempt+1, txParams.Sequence)
+
+		// Create GRPC client with proper error handling
+		grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
+		if err != nil {
+			fmt.Printf("Failed to create GRPC client: %v\n", err)
+			continue
+		}
+
+		resp, _, err := broadcast.SendTransactionViaGRPC(ctx, txParams, txParams.Sequence, grpcClient)
+		if err != nil {
+			fmt.Printf("Transaction failed: %v\n", err)
+
+			// Check if the error is a sequence mismatch error
+			if resp != nil && resp.Code == 32 {
+				expectedSeq, parseErr := lib.ExtractExpectedSequence(resp.RawLog)
+				if parseErr == nil {
+					// Update sequence and retry
+					txParams.Sequence = expectedSeq
+					fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", expectedSeq)
+					continue
+				}
+			}
+			continue
+		}
+
+		if resp.Code != 0 {
+			fmt.Printf("Transaction failed with code %d: %s\n", resp.Code, resp.RawLog)
+
+			// Check for sequence mismatch error
+			if resp.Code == 32 {
+				expectedSeq, parseErr := lib.ExtractExpectedSequence(resp.RawLog)
+				if parseErr == nil {
+					// Update sequence and retry
+					txParams.Sequence = expectedSeq
+					fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", expectedSeq)
+					continue
+				}
+			}
+			return fmt.Errorf("transaction failed with code %d: %s", resp.Code, resp.RawLog)
+		}
+
+		// Successfully broadcasted transaction
+		fmt.Printf("-> Successfully transferred %s %s from %s to %s\n",
+			amount.String(), config.Denom, sender.Address, receiverAddress)
+		return nil
+	}
+
+	return fmt.Errorf("failed to send transaction after %d attempts", maxRetries)
 }
 
 // shouldProceedWithBalances checks if the balances are acceptable to proceed
