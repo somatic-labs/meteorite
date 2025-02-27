@@ -1064,6 +1064,10 @@ func prepareTransactionParams(
 	// Convert MsgParams struct to map
 	msgParamsMap := types.ConvertMsgParamsToMap(config.MsgParams)
 
+	// Explicitly set the from_address to the account's address
+	// This ensures it's always set correctly even if not present in config.MsgParams
+	msgParamsMap["from_address"] = acct.Address
+
 	return types.TransactionParams{
 		Config:      config,
 		NodeURL:     nodeURL,
