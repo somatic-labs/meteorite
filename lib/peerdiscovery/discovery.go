@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -198,16 +199,98 @@ func buildRPCAddress(peer coretypes.Peer) string {
 
 	// If the node advertises a loopback address, replace with the actual IP
 	if strings.HasPrefix(rpcAddr, "0.0.0.0:") || strings.HasPrefix(rpcAddr, "127.0.0.1:") {
-		rpcAddr = peer.RemoteIP + rpcAddr[8:]
+		// Extract the port number
+		parts := strings.Split(rpcAddr, ":")
+		if len(parts) != 2 {
+			return "" // Invalid format
+		}
+		port := parts[1]
+
+		// Make sure the port is numeric
+		if _, err := strconv.Atoi(port); err != nil {
+			return "" // Invalid port
+		}
+
+		rpcAddr = peer.RemoteIP + ":" + port
+	}
+
+	// Validate that the address has a proper format
+	if !strings.Contains(rpcAddr, ":") {
+		return "" // No port specified
+	}
+
+	parts := strings.Split(rpcAddr, ":")
+	if len(parts) != 2 {
+		return "" // Too many colons or improper format
+	}
+
+	// Validate IP format
+	ip := parts[0]
+	if net.ParseIP(ip) == nil && !isValidHostname(ip) {
+		return "" // Invalid IP or hostname
+	}
+
+	// Validate port
+	port := parts[1]
+	if portNum, err := strconv.Atoi(port); err != nil || portNum <= 0 || portNum > 65535 {
+		return "" // Invalid port
 	}
 
 	return rpcAddr
 }
 
+// isValidHostname checks if a string is a valid hostname
+func isValidHostname(hostname string) bool {
+	// Simple validation: hostname shouldn't contain spaces or special chars
+	// and should have at least one character
+	if len(hostname) == 0 || len(hostname) > 253 {
+		return false
+	}
+
+	// Check for valid characters only
+	for _, c := range hostname {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '.' || c == '-') {
+			return false
+		}
+	}
+
+	// Simple check for basic domain format
+	parts := strings.Split(hostname, ".")
+	if len(parts) > 1 {
+		for _, part := range parts {
+			if len(part) == 0 || part[0] == '-' || part[len(part)-1] == '-' {
+				return false
+			}
+		}
+		return true
+	}
+
+	return false
+}
+
 // normalizeAddressWithRemoteIP replaces loopback addresses with the remote IP
 func normalizeAddressWithRemoteIP(nodeAddr, remoteIP string) string {
+	// First validate the remote IP
+	if net.ParseIP(remoteIP) == nil {
+		return "" // Invalid IP
+	}
+
 	nodeAddr = strings.ReplaceAll(nodeAddr, "0.0.0.0", remoteIP)
 	nodeAddr = strings.ReplaceAll(nodeAddr, "127.0.0.1", remoteIP)
+
+	// Do additional validation after replacement
+	parts := strings.Split(nodeAddr, ":")
+	if len(parts) != 2 {
+		return "" // Invalid format after replacement
+	}
+
+	// Validate port
+	port := parts[1]
+	if portNum, err := strconv.Atoi(port); err != nil || portNum <= 0 || portNum > 65535 {
+		return "" // Invalid port
+	}
+
 	return nodeAddr
 }
 
@@ -216,10 +299,75 @@ func normalizeEndpoint(endpoint string) string {
 	// Trim whitespace
 	endpoint = strings.TrimSpace(endpoint)
 
-	// Ensure it has http:// prefix
-	if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
-		endpoint = "http://" + endpoint
+	// Skip invalid endpoints
+	if endpoint == "" {
+		return ""
 	}
+
+	// Extract protocol, host, and port
+	var protocol, address string
+
+	// Handle URLs with protocol
+	if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+		parts := strings.SplitN(endpoint, "://", 2)
+		if len(parts) != 2 {
+			return "" // Invalid URL format
+		}
+		protocol = parts[0]
+		address = parts[1]
+	} else {
+		// No protocol specified, default to http
+		protocol = "http"
+		address = endpoint
+	}
+
+	// Validate host and port
+	// Remove any path component first
+	address = strings.Split(address, "/")[0]
+
+	// Check for IPv6 addresses which are enclosed in brackets
+	if strings.HasPrefix(address, "[") {
+		// IPv6 address format: [address]:port
+		ipv6Parts := strings.Split(address, "]:")
+		if len(ipv6Parts) != 2 {
+			return "" // Invalid IPv6 format
+		}
+
+		// Validate IPv6 address (remove leading '[')
+		ipv6Addr := strings.TrimPrefix(ipv6Parts[0], "[")
+		if net.ParseIP(ipv6Addr) == nil {
+			return "" // Invalid IPv6 address
+		}
+
+		// Validate port
+		port := ipv6Parts[1]
+		if portNum, err := strconv.Atoi(port); err != nil || portNum <= 0 || portNum > 65535 {
+			return "" // Invalid port
+		}
+	} else {
+		// IPv4 or hostname format: host:port
+		ipv4Parts := strings.Split(address, ":")
+
+		// Skip addresses without port or with multiple colons (which could be IPv6 without brackets)
+		if len(ipv4Parts) != 2 {
+			return "" // Invalid format
+		}
+
+		// Validate hostname or IPv4
+		host := ipv4Parts[0]
+		if net.ParseIP(host) == nil && !isValidHostname(host) {
+			return "" // Invalid host
+		}
+
+		// Validate port
+		port := ipv4Parts[1]
+		if portNum, err := strconv.Atoi(port); err != nil || portNum <= 0 || portNum > 65535 {
+			return "" // Invalid port
+		}
+	}
+
+	// Rebuild the endpoint with protocol
+	endpoint = protocol + "://" + address
 
 	// Remove trailing slashes
 	endpoint = strings.TrimRight(endpoint, "/")

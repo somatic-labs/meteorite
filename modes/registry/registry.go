@@ -278,7 +278,20 @@ func mapToConfig(configMap map[string]interface{}) (types.Config, error) {
 	config.Chain = configMap["chain"].(string)
 	config.Denom = configMap["denom"].(string)
 	config.Prefix = configMap["prefix"].(string)
-	config.Positions = configMap["positions"].(uint)
+
+	// Fix the interface conversion error by properly handling the positions field
+	// which could be int or int64 but needs to be uint
+	if positions, ok := configMap["positions"].(uint); ok {
+		config.Positions = positions
+	} else if positions, ok := configMap["positions"].(int); ok {
+		config.Positions = uint(positions)
+	} else if positions, ok := configMap["positions"].(int64); ok {
+		config.Positions = uint(positions)
+	} else {
+		// Default to 50 positions if not specified or of unexpected type
+		config.Positions = 50
+	}
+
 	config.GasPerByte = configMap["gas_per_byte"].(int64)
 	config.BaseGas = configMap["base_gas"].(int64)
 	config.MsgType = configMap["msg_type"].(string)
