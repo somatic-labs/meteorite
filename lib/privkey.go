@@ -29,6 +29,8 @@ func GetPrivKey(config types.Config, mnemonic []byte, position uint32) (privKey 
 
 	algo := hd.Secp256k1
 	hdPath := fmt.Sprintf("m/44'/%d'/0'/0/%d", config.Slip44, position)
+	fmt.Printf("Deriving key using HD path: %s (slip44: %d, chain: %s, prefix: %s)\n",
+		hdPath, config.Slip44, config.Chain, config.Prefix)
 
 	derivedPriv, err := algo.Derive()(mnemonicStr, "", hdPath)
 	if err != nil {

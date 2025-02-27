@@ -2,11 +2,17 @@ package chainregistry
 
 import (
 	"bufio"
+	"context"
+	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/somatic-labs/meteorite/lib/peerdiscovery"
@@ -153,6 +159,10 @@ func GenerateConfigFromChain(selection *ChainSelection) (map[string]interface{},
 		fixedMinGasPrice = chain.Fees.FeeTokens[0].FixedMinGasPrice
 	}
 
+	// Determine slip44 value based on chain information
+	slip44 := determineSlip44(chain.ChainName, chain.Bech32Prefix)
+	fmt.Printf("Using slip44 value %d for chain %s (prefix: %s)\n", slip44, chain.ChainName, chain.Bech32Prefix)
+
 	// Create config
 	config := map[string]interface{}{
 		"chain":          chain.ChainID,
@@ -165,6 +175,7 @@ func GenerateConfigFromChain(selection *ChainSelection) (map[string]interface{},
 		"num_multisend":  10,
 		"broadcast_mode": "grpc",
 		"positions":      50,
+		"slip44":         slip44, // Add slip44 value for correct address derivation
 	}
 
 	// Add gas configuration
@@ -179,18 +190,100 @@ func GenerateConfigFromChain(selection *ChainSelection) (map[string]interface{},
 	}
 
 	if len(selection.OpenEndpoints) > 0 {
-		// For API and GRPC, we'll use a derived endpoint if available
-		rpcBase := selection.OpenEndpoints[0]
+		// For API, use REST endpoints from the chain registry directly
+		var apiBase string
+		var verified bool
 
-		// Convert RPC to API (assumed to be on port 1317)
-		apiBase := strings.ReplaceAll(rpcBase, "26657", "1317")
-		apiBase = strings.ReplaceAll(apiBase, "/rpc", "/rest")
+		// Try each REST endpoint from the registry until we find one that works
+		if len(chain.APIs.Rest) > 0 {
+			fmt.Println("Testing REST endpoints from chain registry...")
+			for _, restEndpoint := range chain.APIs.Rest {
+				apiURL := restEndpoint.Address
+				// Ensure the API endpoint doesn't end with a trailing slash
+				apiURL = strings.TrimSuffix(apiURL, "/")
+
+				fmt.Printf("Trying REST API endpoint from registry: %s\n", apiURL)
+				if verifyAPIEndpoint(apiURL) {
+					apiBase = apiURL
+					verified = true
+					fmt.Printf("✅ Using verified REST endpoint: %s\n", apiBase)
+					break
+				}
+			}
+		}
+
+		// If no REST endpoint worked, fall back to the API endpoints if available
+		if !verified && len(chain.APIs.API) > 0 {
+			fmt.Println("Testing API endpoints from chain registry...")
+			for _, apiEndpoint := range chain.APIs.API {
+				apiURL := apiEndpoint.Address
+				// Ensure the API endpoint doesn't end with a trailing slash
+				apiURL = strings.TrimSuffix(apiURL, "/")
+
+				fmt.Printf("Trying API endpoint from registry: %s\n", apiURL)
+				if verifyAPIEndpoint(apiURL) {
+					apiBase = apiURL
+					verified = true
+					fmt.Printf("✅ Using verified API endpoint: %s\n", apiBase)
+					break
+				}
+			}
+		}
+
+		// Last resort: try to derive from RPC if no registry endpoints worked
+		if !verified {
+			fmt.Println("⚠️ Warning: No valid REST or API endpoints found in registry. Trying to derive from RPC...")
+			// Try each RPC endpoint until we find one with a working API
+			for _, rpcBase := range selection.OpenEndpoints {
+				// Convert RPC to API (assumed to be on port 1317)
+				apiURL := strings.ReplaceAll(rpcBase, "26657", "1317")
+				apiURL = strings.ReplaceAll(apiURL, "/rpc", "/rest")
+				// Ensure the API endpoint doesn't end with a trailing slash
+				apiURL = strings.TrimSuffix(apiURL, "/")
+
+				fmt.Printf("Trying API endpoint derived from %s: %s\n", rpcBase, apiURL)
+				if verifyAPIEndpoint(apiURL) {
+					apiBase = apiURL
+					verified = true
+					fmt.Printf("✅ Using verified derived API endpoint: %s\n", apiBase)
+					break
+				}
+			}
+		}
+
+		if !verified {
+			fmt.Println("⚠️ Warning: Could not verify any API endpoint. Using first REST endpoint from registry (if available) but balance queries may fail.")
+			// Use the first REST endpoint from registry as a fallback if available
+			if len(chain.APIs.Rest) > 0 {
+				apiBase = strings.TrimSuffix(chain.APIs.Rest[0].Address, "/")
+			} else if len(chain.APIs.API) > 0 {
+				apiBase = strings.TrimSuffix(chain.APIs.API[0].Address, "/")
+			} else if len(selection.OpenEndpoints) > 0 {
+				// Fallback to derived endpoint from RPC
+				rpcBase := selection.OpenEndpoints[0]
+				apiBase = strings.ReplaceAll(rpcBase, "26657", "1317")
+				apiBase = strings.ReplaceAll(apiBase, "/rpc", "/rest")
+				apiBase = strings.TrimSuffix(apiBase, "/")
+			}
+		}
+
 		nodes["api"] = apiBase
 
-		// Convert RPC to GRPC (assumed to be on port 9090)
-		grpcBase := strings.ReplaceAll(rpcBase, "26657", "9090")
-		grpcBase = strings.ReplaceAll(grpcBase, "http://", "")
-		grpcBase = strings.ReplaceAll(grpcBase, "/rpc", "")
+		// For GRPC, try to use endpoints from the registry first
+		var grpcBase string
+		if len(chain.APIs.GRPC) > 0 {
+			grpcBase = chain.APIs.GRPC[0].Address
+			// Strip protocol if present, as it's not used in the GRPC URL
+			grpcBase = strings.ReplaceAll(grpcBase, "http://", "")
+			grpcBase = strings.ReplaceAll(grpcBase, "https://", "")
+		} else {
+			// Fallback to derived GRPC from RPC
+			rpcBase := selection.OpenEndpoints[0] // Use first endpoint for GRPC
+			grpcBase = strings.ReplaceAll(rpcBase, "26657", "9090")
+			grpcBase = strings.ReplaceAll(grpcBase, "http://", "")
+			grpcBase = strings.ReplaceAll(grpcBase, "https://", "")
+			grpcBase = strings.ReplaceAll(grpcBase, "/rpc", "")
+		}
 		nodes["grpc"] = grpcBase
 	}
 
@@ -203,4 +296,159 @@ func GenerateConfigFromChain(selection *ChainSelection) (map[string]interface{},
 	}
 
 	return config, nil
+}
+
+// verificationCache stores API endpoint verification results
+var (
+	verificationCache = make(map[string]bool)
+	cacheMutex        = &sync.RWMutex{}
+)
+
+// Helper function to verify an API endpoint works
+func verifyAPIEndpoint(apiURL string) bool {
+	// Check cache first
+	cacheMutex.RLock()
+	cachedResult, found := verificationCache[apiURL]
+	cacheMutex.RUnlock()
+
+	if found {
+		if cachedResult {
+			fmt.Printf("✅ Using cached verification for: %s\n", apiURL)
+		}
+		return cachedResult
+	}
+
+	// Try to make a simple request to verify the API is working
+	testURL := apiURL + "/cosmos/base/tendermint/v1beta1/node_info"
+	fmt.Printf("Testing API endpoint: %s\n", testURL)
+
+	// Use a shorter timeout to fail faster
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL, nil)
+	if err != nil {
+		fmt.Printf("⚠️ Error creating request to verify API endpoint %s: %v\n", apiURL, err)
+		cacheResult(apiURL, false)
+		return false
+	}
+
+	// Add user agent and content type headers
+	req.Header.Set("User-Agent", "Meteorite/1.0")
+	req.Header.Set("Accept", "application/json")
+
+	// Create a client with improved connection settings
+	client := &http.Client{
+		Timeout: 6 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+			MaxIdleConns:    10,
+			IdleConnTimeout: 30 * time.Second,
+		},
+	}
+
+	// Track request timing for debugging
+	startTime := time.Now()
+	resp, err := client.Do(req)
+	requestDuration := time.Since(startTime)
+
+	if err != nil {
+		fmt.Printf("⚠️ API endpoint verification failed for %s after %.2fs: %v\n",
+			apiURL, requestDuration.Seconds(), err)
+		cacheResult(apiURL, false)
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		fmt.Printf("⚠️ API endpoint returned status %d for %s (%.2fs)\n",
+			resp.StatusCode, testURL, requestDuration.Seconds())
+		cacheResult(apiURL, false)
+		return false
+	}
+
+	// Read a small amount of the body to verify it's valid JSON
+	body := make([]byte, 512) // 512 bytes is enough to verify JSON structure
+	n, err := io.ReadAtLeast(resp.Body, body, 1)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		fmt.Printf("⚠️ Error reading response body from %s: %v\n", apiURL, err)
+		cacheResult(apiURL, false)
+		return false
+	}
+
+	// Trim body to actual size read
+	body = body[:n]
+
+	// Check if body appears to be JSON
+	if n > 0 && (body[0] == '{' || body[0] == '[') {
+		// Faster validation - just check if it's valid JSON without full parsing
+		if json.Valid(body) {
+			fmt.Printf("✅ API endpoint verified: %s (%.2fs)\n", apiURL, requestDuration.Seconds())
+			cacheResult(apiURL, true)
+			return true
+		} else {
+			fmt.Printf("⚠️ API endpoint response is not valid JSON: %s\n", apiURL)
+			fmt.Printf("Response first 100 bytes: %s\n", string(body[:min(100, n)]))
+			cacheResult(apiURL, false)
+			return false
+		}
+	}
+
+	fmt.Printf("⚠️ API endpoint response doesn't appear to be JSON: %s\n", apiURL)
+	fmt.Printf("Response first 100 bytes: %s\n", string(body[:min(100, n)]))
+	cacheResult(apiURL, false)
+	return false
+}
+
+// Helper function to cache verification results
+func cacheResult(apiURL string, result bool) {
+	cacheMutex.Lock()
+	defer cacheMutex.Unlock()
+	verificationCache[apiURL] = result
+}
+
+// Helper function to get the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// determineSlip44 returns the appropriate slip44/coin type for a given chain
+func determineSlip44(chainName, prefix string) int {
+	// Map common prefixes to their coin types
+	prefixMap := map[string]int{
+		"cosmos":    118, // Cosmos Hub
+		"osmo":      118, // Osmosis (uses Cosmos coin type)
+		"juno":      118, // Juno
+		"evmos":     60,  // Evmos (uses Ethereum coin type)
+		"injective": 60,  // Injective (uses Ethereum coin type)
+		"atone":     118, // AtomOne
+		"sei":       118, // Sei
+		"akash":     118, // Akash
+		"regen":     118, // Regen
+		"secret":    529, // Secret Network
+		"stargaze":  118, // Stargaze
+		"umee":      118, // Umee
+		"kujira":    118, // Kujira
+		"neutron":   118, // Neutron
+		"dydx":      118, // dYdX
+		"mantra":    118, // Mantra
+	}
+
+	// Check for direct prefix match
+	if coinType, ok := prefixMap[prefix]; ok {
+		return coinType
+	}
+
+	// Check if chain name contains a known prefix
+	for knownPrefix, coinType := range prefixMap {
+		if strings.Contains(chainName, knownPrefix) {
+			return coinType
+		}
+	}
+
+	// Default to Cosmos coin type (118) for unknown chains
+	return 118
 }

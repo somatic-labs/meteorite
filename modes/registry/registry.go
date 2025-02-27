@@ -255,6 +255,15 @@ func runChainTest(selection *chainregistry.ChainSelection, configMap map[string]
 	// Convert map to types.Config
 	config := mapToConfig(configMap)
 
+	// For multisend, always enforce 3000 recipients for optimal performance
+	if config.Multisend {
+		config.NumMultisend = 3000
+		fmt.Println("Enforcing 3000 recipients per multisend transaction for optimal performance")
+	}
+
+	// Print the configuration to help with debugging
+	printConfig(config)
+
 	// Determine minimum gas price from chain registry if available
 	if selection.Chain != nil && len(selection.Chain.Fees.FeeTokens) > 0 {
 		for _, feeToken := range selection.Chain.Fees.FeeTokens {
@@ -354,6 +363,19 @@ func mapToConfig(configMap map[string]interface{}) types.Config {
 	config.Chain = configMap["chain"].(string)
 	config.Denom = configMap["denom"].(string)
 	config.Prefix = configMap["prefix"].(string)
+
+	// Handle slip44 value for address derivation
+	if slip44, ok := configMap["slip44"].(int); ok {
+		config.Slip44 = slip44
+	} else if slip44, ok := configMap["slip44"].(int64); ok {
+		config.Slip44 = int(slip44)
+	} else if slip44, ok := configMap["slip44"].(float64); ok {
+		config.Slip44 = int(slip44)
+	} else {
+		// Default to Cosmos coin type (118) if not specified or unexpected type
+		config.Slip44 = 118
+		fmt.Println("Warning: slip44 not specified in config, defaulting to 118 (Cosmos)")
+	}
 
 	// Fix the interface conversion error by properly handling the positions field
 	// which could be int or int64 but needs to be uint
@@ -766,4 +788,18 @@ func updateGasConfig(config *types.Config) {
 
 	fmt.Printf("Gas optimization enabled: Using adaptive gas strategy with base price %s%s\n",
 		config.Gas.Price, config.Gas.Denom)
+}
+
+// printConfig prints the configuration details for debugging
+func printConfig(config types.Config) {
+	fmt.Println("=== Registry Mode Configuration ===")
+	fmt.Printf("Chain: %s\n", config.Chain)
+	fmt.Printf("Prefix: %s\n", config.Prefix)
+	fmt.Printf("Denom: %s\n", config.Denom)
+	fmt.Printf("Slip44: %d\n", config.Slip44)
+	fmt.Printf("Positions: %d\n", config.Positions)
+	fmt.Printf("Message Type: %s\n", config.MsgType)
+	fmt.Printf("Multisend: %v\n", config.Multisend)
+	fmt.Printf("Num Multisend: %d\n", config.NumMultisend)
+	fmt.Println("==================================")
 }

@@ -69,40 +69,43 @@ cd meteorite
 go install ./...
 ```
 
-
-
 ## Usage
 
-meteorite comes with pre-configured mainnet settings available in the `configurations` folder. To get started:
+Meteorite is designed with a zero-configuration approach by default. Simply run:
 
-1. Ensure you have a file named `seedphrase` containing your seed phrase.
-2. *(Optional)* Set up your own node with a larger mempool (e.g., 10 GB) that accepts a higher number of transactions (e.g., 50,000).
-3. Edit the `nodes.toml` file to include your RPC URLs and adjust any other necessary settings.
-4. Run `meteorite` in the same directory as your `nodes.toml` and `seedphrase` files.
+```bash
+# Run meteorite with the interactive chain registry (zero-configuration mode)
+meteorite
+```
 
-This will initiate the testing suite with your specified configurations.
+This will:
+1. Download the Cosmos Chain Registry
+2. Present an interactive menu to select a chain
+3. Test RPC endpoints automatically
+4. Set up optimal configuration for testing
+
+For advanced users who want more control, you can use a configuration file:
+
+```bash
+# Run with a specific configuration file
+meteorite -config -f your_config.toml
+```
+
+### Requirements
+
+- Create a file named `seedphrase` containing your seed phrase in the directory where you run meteorite
+- Optionally set up your own node with a larger mempool (e.g., 10 GB) for more thorough testing
 
 ## Bank Mode Features
 
 ### MultiSend Transactions
 
-The bank mode now supports MultiSend transactions, which allow you to send tokens to multiple recipients in a single transaction. This can significantly improve transaction throughput and efficiency when testing.
+Meteorite uses MultiSend transactions with 3000 recipients per transaction by default, which significantly improves testing efficiency.
 
-To enable MultiSend:
-
-```toml
-# In your nodes.toml file
-multisend = true
-num_multisend = 10  # Number of recipients per transaction
-```
-
-When `multisend` is enabled, each transaction will send tokens to `num_multisend` different addresses. This feature is particularly useful for:
-
-- Testing chain performance with fewer overall transactions
-- Simulating complex transaction patterns
-- Creating many accounts quickly with a single source of funds
-
-Note that multisend transactions consume more gas than regular send transactions, so you may need to adjust your gas settings accordingly.
+When using MultiSend:
+- Each transaction sends tokens to 3000 different addresses
+- This creates more complex transaction patterns while using fewer overall transactions
+- Gas is automatically adjusted for the higher requirements of MultiSend
 
 ## Important Notes
 

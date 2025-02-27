@@ -17,7 +17,6 @@ import (
 	"github.com/somatic-labs/meteorite/modes/registry"
 	bankmodule "github.com/somatic-labs/meteorite/modules/bank"
 	"github.com/somatic-labs/meteorite/types"
-	"github.com/spf13/viper"
 
 	sdkmath "cosmossdk.io/math"
 
@@ -33,30 +32,17 @@ const (
 func main() {
 	log.Println("Welcome to Meteorite - Transaction Scaling Framework for Cosmos SDK chains")
 
-	// Initialize configuration
-	viper.SetConfigFile("config.toml")
-	if err := viper.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			// Config file not found
-			log.Println("No config file found. Using default configuration.")
-		} else {
-			// Config file was found but another error was produced
-			log.Fatalf("Fatal error reading config file: %s", err)
-		}
-	}
-
-	// Log gas optimization details
-	log.Println("Gas optimization enabled - Using minimum required gas for transactions")
-
-	// Parse command-line flags
+	// Parse command-line flags first
 	flags := parseCommandLineFlags()
 
 	// Determine if we're using a config file or the registry
 	if flags.useConfigFile {
 		// Config file mode - load config from file
+		log.Println("Running in config file mode with file:", flags.configFile)
 		runConfigFileMode(flags)
 	} else {
-		// Registry mode (default) - run the chain registry UI
+		// Registry mode is the default - no config file needed
+		log.Println("Running in zero-configuration registry mode - no config file needed")
 		if err := registry.RunRegistryMode(); err != nil {
 			log.Fatalf("Error in registry mode: %v", err)
 		}
@@ -72,7 +58,7 @@ type Flags struct {
 
 // parseCommandLineFlags parses the command-line flags and returns a Flags struct
 func parseCommandLineFlags() Flags {
-	useConfigFile := flag.Bool("config", false, "Use a configuration file instead of the chain registry")
+	useConfigFile := flag.Bool("config", false, "Use a configuration file instead of zero-configuration registry mode")
 	configFile := flag.String("f", "nodes.toml", "Path to the configuration file (only used with -config)")
 	enableViz := flag.Bool("viz", true, "Enable the transaction visualizer")
 
