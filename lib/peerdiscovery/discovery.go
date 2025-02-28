@@ -15,7 +15,7 @@ import (
 
 const (
 	// DefaultTimeout is the default timeout for RPC requests
-	DefaultTimeout = 5 * time.Second
+	DefaultTimeout = 1 * time.Second
 
 	// MaxConcurrentChecks is the maximum number of concurrent RPC checks
 	MaxConcurrentChecks = 50

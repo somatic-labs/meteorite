@@ -1,0 +1,368 @@
+===============================================
+  METEORITE Transaction Visualizer Started
+  Time: 2025-02-27T21:01:35+08:00
+===============================================
+
+[21:01:35.510] Starting node discovery...
+[21:01:35.611] Starting Meteorite test on chain atomone-1 with 50 accounts
+[21:01:35.611] Initialized MultiSendDistributor with 15 RPC endpoints
+[21:01:36.291] Starting transaction broadcasts for account atone1d6zksykj867ul9tclgkn4mtk7fpgfasnpl5al9 (Position 4)
+[21:01:36.291] Starting broadcasts for position 4 (batchSize: 1000)
+[21:01:36.291] Starting transaction broadcasts for account atone1mzj5jspn04a8uhmgjdfl35phvx9eg0huwdyz3y (Position 7)
+[21:01:36.291] Starting broadcasts for position 7 (batchSize: 1000)
+[21:01:36.291] Starting transaction broadcasts for account atone1nexez6f4rcsaj2zatf00elwft5tumkt3qezmhn (Position 30)
+[21:01:36.291] Starting broadcasts for position 30 (batchSize: 1000)
+[21:01:36.291] Starting transaction broadcasts for account atone1paefpxvjvmmq03gvsfjzwut0zap7z5nqzgnx9t (Position 1)
+[21:01:36.291] Starting broadcasts for position 1 (batchSize: 1000)
+[21:01:36.291] Starting transaction broadcasts for account atone13jn57a79avn9s0ehwsjxzdvq89hzct259gpyk0 (Position 37)
+[21:01:36.291] Starting broadcasts for position 37 (batchSize: 1000)
+[21:01:36.291] Starting transaction broadcasts for account atone1qtpqvku5f7zpxjafrsadkr57muq2728v488d2q (Position 49)
+[21:01:36.291] Starting broadcasts for position 49 (batchSize: 1000)
+[21:01:36.435] Starting transaction broadcasts for account atone1el26j9qm9gwdje93853nw0wua2ltpck8sjjc8h (Position 42)
+[21:01:36.435] Starting broadcasts for position 42 (batchSize: 1000)
+[21:01:36.435] Starting transaction broadcasts for account atone1crp2ue3j47fw8730gja6nmfp53mq04m3capgdz (Position 27)
+[21:01:36.435] Starting broadcasts for position 27 (batchSize: 1000)
+[21:01:36.435] Starting transaction broadcasts for account atone1fmuu3y9lwhgqu5r09afjpk5qqed9mvayq70ha2 (Position 22)
+[21:01:36.435] Starting broadcasts for position 22 (batchSize: 1000)
+[21:01:36.435] Starting transaction broadcasts for account atone1yt4t2kcxd0297sd0qf7fm8e3l82ysxxm2f3shw (Position 9)
+[21:01:36.435] Starting broadcasts for position 9 (batchSize: 1000)
+[21:01:36.435] Starting transaction broadcasts for account atone1yss5n3s93q77lu864ypdpglguykdt5cvup7xxk (Position 38)
+[21:01:36.435] Starting broadcasts for position 38 (batchSize: 1000)
+[21:01:36.435] Starting transaction broadcasts for account atone1l8p8ltwvt5rt4r3zxmtz6ctr886j5nm0pxg8ze (Position 17)
+[21:01:36.435] Starting broadcasts for position 17 (batchSize: 1000)
+[21:01:36.435] Starting transaction broadcasts for account atone1fwfc7qexwr7p5ua6s6mxl8a5kq3qeqmx2a0ku4 (Position 46)
+[21:01:36.435] Starting broadcasts for position 46 (batchSize: 1000)
+[21:01:36.435] Starting transaction broadcasts for account atone10q49hs6c5axrzj80lvxfw5ke35q4gtyrj4zkjt (Position 45)
+[21:01:36.435] Starting broadcasts for position 45 (batchSize: 1000)
+[21:01:36.436] Starting transaction broadcasts for account atone1v4hwqy83x6q77jyv2yr33qruefc5ruv66exs90 (Position 21)
+[21:01:36.436] Starting broadcasts for position 21 (batchSize: 1000)
+[21:01:36.442] Starting transaction broadcasts for account atone1p9d29dvh76hkx4740c8vvh4f8mtkm5qxeq8ggn (Position 25)
+[21:01:36.442] Starting transaction broadcasts for account atone1klludrd7n5kxhtj429wmsc5eu0hx03xhmyr589 (Position 40)
+[21:01:36.442] Starting broadcasts for position 40 (batchSize: 1000)
+[21:01:36.442] Starting broadcasts for position 25 (batchSize: 1000)
+[21:01:36.442] Starting transaction broadcasts for account atone1uqrar205hjv4s8832kwj8e6xhwvk4x0e9sfvqn (Position 0)
+[21:01:36.442] Starting broadcasts for position 0 (batchSize: 1000)
+[21:01:36.442] Starting transaction broadcasts for account atone1fqcdx90gf7lsm64ar7yrmduv3w6l8fdfyxy87f (Position 35)
+[21:01:36.442] Starting transaction broadcasts for account atone1em00gyc27wuy0f5q2d79cvlytp9lmwysvy0e3y (Position 26)
+[21:01:36.442] Starting broadcasts for position 26 (batchSize: 1000)
+[21:01:36.442] Starting broadcasts for position 35 (batchSize: 1000)
+[21:01:36.446] Starting transaction broadcasts for account atone1tqacfp9ked6l07szd4w0ym4ax706rmyr7g3tz0 (Position 36)
+[21:01:36.446] Starting broadcasts for position 36 (batchSize: 1000)
+[21:01:36.446] Starting transaction broadcasts for account atone17jygnf7z6hftdl94l4c5z6vz3df4p4yl9x8rsr (Position 19)
+[21:01:36.446] Starting broadcasts for position 19 (batchSize: 1000)
+[21:01:36.446] Starting transaction broadcasts for account atone1lzx0e3mk624829000fn4fl9xcldm0j2ld22q49 (Position 8)
+[21:01:36.446] Starting broadcasts for position 8 (batchSize: 1000)
+[21:01:36.446] Starting transaction broadcasts for account atone1pa4hyh7phutu6kt3ejrufnwcgdphxqzrg4059d (Position 23)
+[21:01:36.446] Starting broadcasts for position 23 (batchSize: 1000)
+[21:01:36.446] Starting transaction broadcasts for account atone1ngmwvjh5gzswlhg3qdv0z394ykqhszcu99yg4j (Position 33)
+[21:01:36.446] Starting broadcasts for position 33 (batchSize: 1000)
+[21:01:36.446] Starting transaction broadcasts for account atone1a7gxstcxxx8pkgmgehhc2cmjs43pujkna7lsza (Position 47)
+[21:01:36.446] Starting broadcasts for position 47 (batchSize: 1000)
+[21:01:36.447] Starting transaction broadcasts for account atone1h8xn6hd2jktq7uqcur90fu97lx6fhs9ra3w403 (Position 31)
+[21:01:36.447] Starting broadcasts for position 31 (batchSize: 1000)
+[21:01:36.447] Starting transaction broadcasts for account atone1m4rk3y3ewrpukdzk8zeljy63sxwcqdz2jse3jj (Position 11)
+[21:01:36.447] Starting broadcasts for position 11 (batchSize: 1000)
+[21:01:36.447] Starting transaction broadcasts for account atone1vfrhszmszmaa6negmmnkph05xjhjlcdmx32ky4 (Position 3)
+[21:01:36.447] Starting broadcasts for position 3 (batchSize: 1000)
+[21:01:36.447] Starting transaction broadcasts for account atone1ply6atsmw0adfkqv55nxx8f8m24suazvj705kl (Position 34)
+[21:01:36.447] Starting broadcasts for position 34 (batchSize: 1000)
+[21:01:36.447] Starting transaction broadcasts for account atone1524el5yxcx099pl26drekltfladkzew5w7gd8v (Position 18)
+[21:01:36.447] Starting broadcasts for position 18 (batchSize: 1000)
+[21:01:36.448] Starting transaction broadcasts for account atone1d7an5eujxunr8fm9yz66eth2x59dx7atf6unxp (Position 10)
+[21:01:36.448] Starting broadcasts for position 10 (batchSize: 1000)
+[21:01:36.451] Starting transaction broadcasts for account atone15dkgfskvah7tjfsl5gukyy6c0ysewcqy5r6x6j (Position 12)
+[21:01:36.451] Starting broadcasts for position 12 (batchSize: 1000)
+[21:01:36.451] Starting transaction broadcasts for account atone13x950vmwt3cy4e9uryqze9rmy5qlck0lx6x75n (Position 39)
+[21:01:36.451] Starting broadcasts for position 39 (batchSize: 1000)
+[21:01:36.452] Starting transaction broadcasts for account atone19xn6e778avce0p3chdd60v842m4ycq74u579wd (Position 14)
+[21:01:36.452] Starting broadcasts for position 14 (batchSize: 1000)
+[21:01:36.452] Starting transaction broadcasts for account atone1fxwd4xs3pr7d3ededl7krgtjvptexv5fljx33d (Position 2)
+[21:01:36.452] Starting broadcasts for position 2 (batchSize: 1000)
+[21:01:36.452] Starting transaction broadcasts for account atone1l8t99u06lg2jumgh5vcnzefs6xm54lf2kzv8ar (Position 28)
+[21:01:36.452] Starting broadcasts for position 28 (batchSize: 1000)
+[21:01:36.452] Starting transaction broadcasts for account atone19py772eremcxe7ty80s9g79rmp493jhys0jtx7 (Position 24)
+[21:01:36.452] Starting broadcasts for position 24 (batchSize: 1000)
+[21:01:36.452] Starting transaction broadcasts for account atone1aak3drtr2ed3sq4uz9fydglaaasp7yq5wgpalu (Position 20)
+[21:01:36.452] Starting broadcasts for position 20 (batchSize: 1000)
+[21:01:36.452] Starting transaction broadcasts for account atone1ufkmacpp2lqkaja000976hlnhe392wc735g70m (Position 41)
+[21:01:36.452] Starting broadcasts for position 41 (batchSize: 1000)
+[21:01:36.452] Starting transaction broadcasts for account atone16upqufe4ke8lnfsutsvzgmukt6n47fzqk392qc (Position 32)
+[21:01:36.452] Starting broadcasts for position 32 (batchSize: 1000)
+[21:01:36.452] Starting transaction broadcasts for account atone14hme47pvhghgl3jac64un35dppas7m8cqu4y57 (Position 15)
+[21:01:36.452] Starting broadcasts for position 15 (batchSize: 1000)
+[21:01:36.452] Starting transaction broadcasts for account atone1vza8h2x0rt7gaqadezem64khc0uls9atkts7j0 (Position 43)
+[21:01:36.452] Starting broadcasts for position 43 (batchSize: 1000)
+[21:01:36.452] Starting transaction broadcasts for account atone1fy5upzpdpyqh874y0uya9l6jv0r0y8ykmzvex8 (Position 16)
+[21:01:36.453] Starting broadcasts for position 16 (batchSize: 1000)
+[21:01:36.453] Starting transaction broadcasts for account atone1r4f4nwlpwthjv4c2n3s2cqxsu69c27hwlwygat (Position 44)
+[21:01:36.453] Starting broadcasts for position 44 (batchSize: 1000)
+[21:01:36.453] Starting transaction broadcasts for account atone1m6j8u4a40d82e568pwvnz388fj3a4vzu6jqrv3 (Position 13)
+[21:01:36.453] Starting broadcasts for position 13 (batchSize: 1000)
+[21:01:36.453] Starting transaction broadcasts for account atone1dlz0mwnmxtrqh2ky8skg96lp9npvjzmq48w4rh (Position 6)
+[21:01:36.453] Starting broadcasts for position 6 (batchSize: 1000)
+[21:01:36.453] Starting transaction broadcasts for account atone1rucy7jqdx9thd958p9n2ar8cf20utlv9gagw64 (Position 48)
+[21:01:36.453] Starting broadcasts for position 48 (batchSize: 1000)
+[21:01:36.453] Starting transaction broadcasts for account atone1l9pcvgdsgz6qzpceeeev4a8dkuhqhan0hm2zlc (Position 5)
+[21:01:36.453] Starting broadcasts for position 5 (batchSize: 1000)
+[21:01:36.453] Starting transaction broadcasts for account atone1uwfzyv2r4djuwja2q2m0kws6f3hmr68q2gl6tw (Position 29)
+[21:01:36.453] Starting broadcasts for position 29 (batchSize: 1000)
+[21:01:38.829] Discovery complete. Found 15 new nodes
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:01:40+08:00
+Total Txs: 1 | Successful: 0 | Failed: 1 | Success Rate: 0.00%
+TPS: 0.00 | Avg Latency: 2906ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:01:45+08:00
+Total Txs: 38 | Successful: 7 | Failed: 31 | Success Rate: 18.42%
+TPS: 0.18 | Avg Latency: 6079ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:01:50+08:00
+Total Txs: 75 | Successful: 11 | Failed: 64 | Success Rate: 14.67%
+TPS: 0.13 | Avg Latency: 6252ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:01:55+08:00
+Total Txs: 115 | Successful: 19 | Failed: 96 | Success Rate: 16.52%
+TPS: 0.17 | Avg Latency: 6510ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:02:00+08:00
+Total Txs: 157 | Successful: 24 | Failed: 133 | Success Rate: 15.29%
+TPS: 0.13 | Avg Latency: 6197ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:02:05+08:00
+Total Txs: 193 | Successful: 28 | Failed: 165 | Success Rate: 14.51%
+TPS: 0.13 | Avg Latency: 6294ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:02:10+08:00
+Total Txs: 231 | Successful: 34 | Failed: 197 | Success Rate: 14.72%
+TPS: 0.15 | Avg Latency: 6651ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:02:15+08:00
+Total Txs: 266 | Successful: 39 | Failed: 227 | Success Rate: 14.66%
+TPS: 0.17 | Avg Latency: 6682ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:02:20+08:00
+Total Txs: 304 | Successful: 43 | Failed: 261 | Success Rate: 14.14%
+TPS: 0.13 | Avg Latency: 6591ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:02:25+08:00
+Total Txs: 338 | Successful: 47 | Failed: 291 | Success Rate: 13.91%
+TPS: 0.13 | Avg Latency: 6450ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:02:30+08:00
+Total Txs: 385 | Successful: 52 | Failed: 333 | Success Rate: 13.51%
+TPS: 0.12 | Avg Latency: 6305ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:02:35+08:00
+Total Txs: 426 | Successful: 57 | Failed: 369 | Success Rate: 13.38%
+TPS: 0.12 | Avg Latency: 6085ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:02:40+08:00
+Total Txs: 463 | Successful: 63 | Failed: 400 | Success Rate: 13.61%
+TPS: 0.17 | Avg Latency: 5891ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:02:45+08:00
+Total Txs: 501 | Successful: 68 | Failed: 433 | Success Rate: 13.57%
+TPS: 0.13 | Avg Latency: 5785ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:02:50+08:00
+Total Txs: 545 | Successful: 74 | Failed: 471 | Success Rate: 13.58%
+TPS: 0.13 | Avg Latency: 7155ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:02:55+08:00
+Total Txs: 586 | Successful: 77 | Failed: 509 | Success Rate: 13.14%
+TPS: 0.13 | Avg Latency: 6996ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:03:00+08:00
+Total Txs: 631 | Successful: 82 | Failed: 549 | Success Rate: 13.00%
+TPS: 0.08 | Avg Latency: 5795ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:03:05+08:00
+Total Txs: 674 | Successful: 87 | Failed: 587 | Success Rate: 12.91%
+TPS: 0.10 | Avg Latency: 5684ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:03:10+08:00
+Total Txs: 724 | Successful: 92 | Failed: 632 | Success Rate: 12.71%
+TPS: 0.10 | Avg Latency: 5916ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:03:15+08:00
+Total Txs: 778 | Successful: 98 | Failed: 680 | Success Rate: 12.60%
+TPS: 0.12 | Avg Latency: 5267ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:03:20+08:00
+Total Txs: 832 | Successful: 105 | Failed: 727 | Success Rate: 12.62%
+TPS: 0.13 | Avg Latency: 4329ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:03:25+08:00
+Total Txs: 850 | Successful: 107 | Failed: 743 | Success Rate: 12.59%
+TPS: 0.10 | Avg Latency: 4548ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:03:30+08:00
+Total Txs: 863 | Successful: 110 | Failed: 753 | Success Rate: 12.75%
+TPS: 0.15 | Avg Latency: 5430ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:03:35+08:00
+Total Txs: 877 | Successful: 110 | Failed: 767 | Success Rate: 12.54%
+TPS: 0.12 | Avg Latency: 6362ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:03:40+08:00
+Total Txs: 889 | Successful: 111 | Failed: 778 | Success Rate: 12.49%
+TPS: 0.12 | Avg Latency: 7861ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:03:45+08:00
+Total Txs: 902 | Successful: 114 | Failed: 788 | Success Rate: 12.64%
+TPS: 0.12 | Avg Latency: 9360ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:03:50+08:00
+Total Txs: 914 | Successful: 115 | Failed: 799 | Success Rate: 12.58%
+TPS: 0.12 | Avg Latency: 10940ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:03:55+08:00
+Total Txs: 925 | Successful: 116 | Failed: 809 | Success Rate: 12.54%
+TPS: 0.10 | Avg Latency: 12245ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:04:00+08:00
+Total Txs: 931 | Successful: 116 | Failed: 815 | Success Rate: 12.46%
+TPS: 0.10 | Avg Latency: 14106ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:04:05+08:00
+Total Txs: 947 | Successful: 116 | Failed: 831 | Success Rate: 12.25%
+TPS: 0.08 | Avg Latency: 15791ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:04:10+08:00
+Total Txs: 966 | Successful: 116 | Failed: 850 | Success Rate: 12.01%
+TPS: 0.02 | Avg Latency: 18112ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:04:15+08:00
+Total Txs: 984 | Successful: 118 | Failed: 866 | Success Rate: 11.99%
+TPS: 0.03 | Avg Latency: 18795ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:04:20+08:00
+Total Txs: 1011 | Successful: 119 | Failed: 892 | Success Rate: 11.77%
+TPS: 0.05 | Avg Latency: 16983ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:04:25+08:00
+Total Txs: 1035 | Successful: 121 | Failed: 914 | Success Rate: 11.69%
+TPS: 0.08 | Avg Latency: 15898ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:04:30+08:00
+Total Txs: 1074 | Successful: 124 | Failed: 950 | Success Rate: 11.55%
+TPS: 0.08 | Avg Latency: 11947ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:04:35+08:00
+Total Txs: 1120 | Successful: 129 | Failed: 991 | Success Rate: 11.52%
+TPS: 0.10 | Avg Latency: 9463ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B
+
+=== METEORITE TXN STATS ===
+Time: 2025-02-27T21:04:40+08:00
+Total Txs: 1167 | Successful: 135 | Failed: 1032 | Success Rate: 11.57%
+TPS: 0.13 | Avg Latency: 6666ms | Latest Block: 0
+Nodes: 15 | Online: 0 | Syncing: 0 | Offline: 15
+Mempool Txs: 0 | Size: 0 B

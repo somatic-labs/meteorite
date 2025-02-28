@@ -31,10 +31,10 @@ import (
 var httpClient = &http.Client{
 	Timeout: 30 * time.Second, // Adjusted timeout to 30 seconds
 	Transport: &http.Transport{
-		MaxIdleConns:        100,              // Increased maximum idle connections
-		MaxIdleConnsPerHost: 10,               // Increased maximum idle connections per host
-		IdleConnTimeout:     90 * time.Second, // Increased idle connection timeout
-		TLSHandshakeTimeout: 10 * time.Second, // Increased TLS handshake timeout
+		MaxIdleConns:        100,             // Increased maximum idle connections
+		MaxIdleConnsPerHost: 10,              // Increased maximum idle connections per host
+		IdleConnTimeout:     1 * time.Second, // Increased idle connection timeout
+		TLSHandshakeTimeout: 1 * time.Second, // Increased TLS handshake timeout
 	},
 }
 
@@ -156,7 +156,7 @@ func GetChainID(nodeURL string) (string, error) {
 }
 
 func HTTPGet(url string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
 	log.Printf("Sending HTTP GET request to: %s", url)
@@ -391,7 +391,7 @@ func GetAccountBalance(address string, config types.Config) (sdkmath.Int, error)
 	log.Printf("Fetching balance from API: %s", apiUrl)
 
 	// Create a context with timeout for the HTTP request
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
 	// Create a request with context
@@ -531,17 +531,17 @@ var (
 func GetSharedHTTPClient() *http.Client {
 	httpClientOnce.Do(func() {
 		transport := &http.Transport{
-			MaxIdleConns:        100,              // Maximum number of idle connections
-			MaxIdleConnsPerHost: 10,               // Maximum idle connections per host
-			IdleConnTimeout:     90 * time.Second, // How long connections can remain idle
-			DisableCompression:  false,            // Enable compression
+			MaxIdleConns:        100,             // Maximum number of idle connections
+			MaxIdleConnsPerHost: 10,              // Maximum idle connections per host
+			IdleConnTimeout:     1 * time.Second, // How long connections can remain idle
+			DisableCompression:  false,           // Enable compression
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: false, // Don't skip TLS verification
 			},
 		}
 
 		sharedHTTPClient = &http.Client{
-			Timeout:   30 * time.Second, // Overall timeout for requests
+			Timeout:   1 * time.Second, // Overall timeout for requests
 			Transport: transport,
 		}
 	})

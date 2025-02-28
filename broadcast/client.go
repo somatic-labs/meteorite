@@ -53,7 +53,7 @@ func GetClient(rpcEndpoint string) (*Client, error) {
 
 func (b *Client) Transaction(txBytes []byte) (*coretypes.ResultBroadcastTx, error) {
 	// Increase timeout to 60 seconds for large multisend transactions
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
 	t := tmtypes.Tx(txBytes)

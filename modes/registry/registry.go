@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -670,7 +671,7 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 	})
 
 	// 4. Prepare sequences for all accounts that will send funds
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
 	// Find all sender accounts
@@ -783,10 +784,26 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 	// Get sequence manager
 	seqManager := lib.GetSequenceManager()
 
-	// Get latest sequence from our manager (will fetch from chain if needed)
-	sequence, err := seqManager.GetSequence(sender.Address, config, false)
+	// Get node selector for distributing transactions across nodes
+	nodeSelector := broadcast.GetNodeSelector()
+	if len(config.Nodes.RPC) > 0 {
+		nodeSelector.SetNodes(config.Nodes.RPC)
+	}
+
+	// Choose the least used node for this transfer to balance load
+	nodeURL := nodeSelector.GetLeastUsedNode()
+	if nodeURL == "" && len(config.Nodes.RPC) > 0 {
+		// Fallback to the first node if selection fails
+		nodeURL = config.Nodes.RPC[0]
+	}
+
+	fmt.Printf("Selected node %s for transfer from %s to %s\n",
+		nodeURL, sender.Address, receiverAddress)
+
+	// Get latest sequence from our manager for the selected node
+	sequence, err := seqManager.GetSequence(sender.Address, nodeURL, config, false)
 	if err != nil {
-		log.Printf("Failed to get sequence for %s: %v", sender.Address, err)
+		log.Printf("Failed to get sequence for %s on node %s: %v", sender.Address, nodeURL, err)
 		return err
 	}
 
@@ -800,8 +817,8 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 	// Set up transaction parameters
 	txParams := types.TransactionParams{
 		Config:      config,
-		NodeURL:     config.Nodes.RPC[0], // Use the first RPC node
-		ChainID:     config.Chain,        // Use Chain field instead of ChainID
+		NodeURL:     nodeURL,
+		ChainID:     config.Chain, // Use Chain field instead of ChainID
 		Sequence:    sequence,
 		AccNum:      accNum,
 		PrivKey:     sender.PrivKey,
@@ -830,10 +847,10 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		// For attempts after the first, we'll force a refresh of the sequence
 		if attempt > 1 {
-			// Refresh sequence from chain
-			newSequence, err := seqManager.GetSequence(sender.Address, config, true)
+			// Refresh sequence from chain for the current node
+			newSequence, err := seqManager.GetSequence(sender.Address, nodeURL, config, true)
 			if err != nil {
-				log.Printf("Failed to refresh sequence for %s: %v", sender.Address, err)
+				log.Printf("Failed to refresh sequence for %s on node %s: %v", sender.Address, nodeURL, err)
 				return err
 			}
 			txParams.Sequence = newSequence
@@ -841,8 +858,8 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 			// Increase gas price for retry attempts
 			increaseFactor := 1.0 + float64(attempt-1)*0.2
 			txParams.Config.Gas.Low = int64(float64(config.Gas.Low) * increaseFactor)
-			log.Printf("Retry attempt %d: Using sequence %d with gas price %d",
-				attempt, txParams.Sequence, txParams.Config.Gas.Low)
+			log.Printf("Retry attempt %d: Using sequence %d with gas price %d on node %s",
+				attempt, txParams.Sequence, txParams.Config.Gas.Low, nodeURL)
 		}
 
 		// Create GRPC client
@@ -857,11 +874,11 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 
 		if err == nil && (resp == nil || resp.Code == 0) {
 			// Transaction successful
-			log.Printf("Successfully transferred %s%s from %s to %s. Tx hash: %s",
-				amount.String(), config.Denom, sender.Address, receiverAddress, resp.TxHash)
+			log.Printf("Successfully transferred %s%s from %s to %s. Tx hash: %s (Node: %s)",
+				amount.String(), config.Denom, sender.Address, receiverAddress, resp.TxHash, nodeURL)
 
 			// Update sequence in our manager
-			seqManager.SetSequence(sender.Address, txParams.Sequence+1)
+			seqManager.SetSequence(sender.Address, nodeURL, txParams.Sequence+1)
 			return nil
 		}
 
@@ -870,26 +887,39 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 			// Check if the error is due to sequence mismatch
 			if strings.Contains(err.Error(), "account sequence mismatch") {
 				// Extract correct sequence from error
-				newSeq, updated := seqManager.UpdateFromError(sender.Address, err.Error())
+				newSeq, updated := seqManager.UpdateFromError(sender.Address, nodeURL, err.Error())
 				if updated {
-					log.Printf("Account sequence mismatch for %s. Updated to %d", sender.Address, newSeq)
+					log.Printf("Account sequence mismatch for %s on node %s. Updated to %d", sender.Address, nodeURL, newSeq)
 					// Don't sleep, retry immediately with correct sequence
 					continue
 				} else {
 					// Wait a bit and retry with refreshed sequence from chain
-					log.Printf("Account sequence mismatch for %s. Will refresh from chain.", sender.Address)
+					log.Printf("Account sequence mismatch for %s on node %s. Will refresh from chain.", sender.Address, nodeURL)
 					time.Sleep(backoff)
 					backoff *= 2 // Increase backoff for next retry
 					continue
 				}
 			} else if strings.Contains(err.Error(), "insufficient fee") {
 				// Insufficient fee error - retry with higher fee
-				log.Printf("Insufficient fee detected. Retrying with higher fee.")
+				log.Printf("Insufficient fee detected on node %s. Retrying with higher fee.", nodeURL)
 				time.Sleep(backoff)
 				backoff *= 2 // Increase backoff for next retry
 				continue
 			} else {
-				// Other errors
+				// For other errors, we might try a different node on next retry
+				if attempt < maxRetries {
+					// Select a different node for the next attempt
+					oldNode := nodeURL
+					nodeURL = nodeSelector.GetNextNode(uint32(attempt)) // Use attempt number to get a different node
+					if nodeURL == "" || nodeURL == oldNode {
+						// If we couldn't get a different node, use a random one from the list
+						idx := rand.Intn(len(config.Nodes.RPC))
+						nodeURL = config.Nodes.RPC[idx]
+					}
+					log.Printf("Switching from node %s to node %s after error: %v", oldNode, nodeURL, err)
+					continue
+				}
+				// All retries exhausted
 				log.Printf("Failed to send transaction from %s to %s: %v", sender.Address, receiverAddress, err)
 				return err
 			}
@@ -898,15 +928,15 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 		// Check for transaction failure
 		if resp != nil && resp.Code != 0 {
 			if strings.Contains(resp.RawLog, "insufficient fee") {
-				log.Printf("Transaction failed with insufficient fee. Retrying with higher fee.")
+				log.Printf("Transaction failed with insufficient fee on node %s. Retrying with higher fee.", nodeURL)
 				time.Sleep(backoff)
 				backoff *= 2
 				continue
 			} else if strings.Contains(resp.RawLog, "account sequence mismatch") {
 				// Extract correct sequence from response
-				newSeq, updated := seqManager.UpdateFromError(sender.Address, resp.RawLog)
+				newSeq, updated := seqManager.UpdateFromError(sender.Address, nodeURL, resp.RawLog)
 				if updated {
-					log.Printf("Account sequence mismatch in response. Updated to %d", newSeq)
+					log.Printf("Account sequence mismatch in response from node %s. Updated to %d", nodeURL, newSeq)
 					continue
 				}
 			}

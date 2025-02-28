@@ -369,7 +369,7 @@ func verifyAPIEndpoint(apiURL string) bool {
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
 			MaxIdleConns:    10,
-			IdleConnTimeout: 30 * time.Second,
+			IdleConnTimeout: 1 * time.Second,
 		},
 	}
 

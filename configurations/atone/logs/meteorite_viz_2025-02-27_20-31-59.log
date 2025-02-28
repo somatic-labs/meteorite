@@ -1,0 +1,43 @@
+===============================================
+  METEORITE Transaction Visualizer Started
+  Time: 2025-02-27T20:31:59+08:00
+===============================================
+
+[20:31:59.003] Starting node discovery...
+[20:31:59.104] Starting Meteorite test on chain atomone-1 with 50 accounts
+[20:31:59.105] Initialized MultiSendDistributor with 16 RPC endpoints
+[20:31:59.795] Starting transaction broadcasts for account atone17jygnf7z6hftdl94l4c5z6vz3df4p4yl9x8rsr (Position 19)
+[20:31:59.795] Starting broadcasts for position 19 (batchSize: 100000000)
+[20:31:59.795] Starting transaction broadcasts for account atone1ngmwvjh5gzswlhg3qdv0z394ykqhszcu99yg4j (Position 33)
+[20:31:59.795] Starting broadcasts for position 33 (batchSize: 100000000)
+[20:31:59.800] Starting transaction broadcasts for account atone19xn6e778avce0p3chdd60v842m4ycq74u579wd (Position 14)
+[20:31:59.800] Starting broadcasts for position 14 (batchSize: 100000000)
+[20:31:59.800] Starting transaction broadcasts for account atone15dkgfskvah7tjfsl5gukyy6c0ysewcqy5r6x6j (Position 12)
+[20:31:59.800] Starting broadcasts for position 12 (batchSize: 100000000)
+[20:31:59.961] Starting transaction broadcasts for account atone1tqacfp9ked6l07szd4w0ym4ax706rmyr7g3tz0 (Position 36)
+[20:31:59.961] Starting broadcasts for position 36 (batchSize: 100000000)
+[20:31:59.961] Starting transaction broadcasts for account atone13x950vmwt3cy4e9uryqze9rmy5qlck0lx6x75n (Position 39)
+[20:31:59.961] Starting broadcasts for position 39 (batchSize: 100000000)
+[20:31:59.961] Starting transaction broadcasts for account atone1yss5n3s93q77lu864ypdpglguykdt5cvup7xxk (Position 38)
+[20:31:59.961] Starting broadcasts for position 38 (batchSize: 100000000)
+[20:31:59.961] Starting transaction broadcasts for account atone1uqrar205hjv4s8832kwj8e6xhwvk4x0e9sfvqn (Position 0)
+[20:31:59.961] Starting broadcasts for position 0 (batchSize: 100000000)
+[20:31:59.961] Starting transaction broadcasts for account atone1h8xn6hd2jktq7uqcur90fu97lx6fhs9ra3w403 (Position 31)
+[20:31:59.961] Starting broadcasts for position 31 (batchSize: 100000000)
+[20:31:59.962] Starting transaction broadcasts for account atone1d6zksykj867ul9tclgkn4mtk7fpgfasnpl5al9 (Position 4)
+[20:31:59.962] Starting broadcasts for position 4 (batchSize: 100000000)
+[20:31:59.962] Starting transaction broadcasts for account atone1crp2ue3j47fw8730gja6nmfp53mq04m3capgdz (Position 27)
+[20:31:59.962] Starting transaction broadcasts for account atone1vfrhszmszmaa6negmmnkph05xjhjlcdmx32ky4 (Position 3)
+[20:31:59.962] Starting transaction broadcasts for account atone1lzx0e3mk624829000fn4fl9xcldm0j2ld22q49 (Position 8)
+[20:31:59.962] Starting broadcasts for position 8 (batchSize: 100000000)
+[20:31:59.962] Starting transaction broadcasts for account atone1p9d29dvh76hkx4740c8vvh4f8mtkm5qxeq8ggn (Position 25)
+[20:31:59.962] Starting broadcasts for position 25 (batchSize: 100000000)
+[20:31:59.962] Starting transaction broadcasts for account atone1klludrd7n5kxhtj429wmsc5eu0hx03xhmyr589 (Position 40)
+[20:31:59.962] Starting broadcasts for position 40 (batchSize: 100000000)
+[20:31:59.962] Starting transaction broadcasts for account atone1fmuu3y9lwhgqu5r09afjpk5qqed9mvayq70ha2 (Position 22)
+[20:31:59.962] Starting broadcasts for position 22 (batchSize: 100000000)
+[20:31:59.962] Starting transaction broadcasts for account atone1524el5yxcx099pl26drekltfladkzew5w7gd8v (Position 18)
+[20:31:59.962] Starting broadcasts for position 18 (batchSize: 100000000)
+[20:31:59.962] Starting transaction broadcasts for account atone1l8t99u06lg2jumgh5vcnzefs6xm54lf2kzv8ar (Position 28)
+[20:31:59.962] Starting broadcasts for position 28 (batchSize: 100000000)
+[20:31:59.962] Starting transaction broadcasts for account atone1d7an5eujxunr8fm9yz66eth2x59dx7atf6unxp (Position 10)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	types "github.com/somatic-labs/meteorite/types"
@@ -135,4 +136,137 @@ func MakeEncodingConfig() codec.ProtoCodecMarshaler {
 	banktypes.RegisterInterfaces(interfaceRegistry)
 
 	return marshaler
+}
+
+// NodeSelector manages the distribution of transactions across RPC nodes
+type NodeSelector struct {
+	nodes         []string
+	nextNodeIndex map[uint32]int // map position -> next node index
+	nodeUsage     map[string]int // track usage count for each node
+	mutex         sync.RWMutex
+}
+
+var (
+	globalNodeSelector *NodeSelector
+	nodeSelectorOnce   sync.Once
+)
+
+// GetNodeSelector returns the global node selector
+func GetNodeSelector() *NodeSelector {
+	nodeSelectorOnce.Do(func() {
+		globalNodeSelector = &NodeSelector{
+			nodes:         []string{},
+			nextNodeIndex: make(map[uint32]int),
+			nodeUsage:     make(map[string]int),
+		}
+	})
+	return globalNodeSelector
+}
+
+// SetNodes updates the list of available nodes
+func (ns *NodeSelector) SetNodes(nodes []string) {
+	ns.mutex.Lock()
+	defer ns.mutex.Unlock()
+
+	// Create a copy of the nodes slice
+	ns.nodes = make([]string, len(nodes))
+	copy(ns.nodes, nodes)
+
+	// Reset usage statistics for nodes that no longer exist
+	for node := range ns.nodeUsage {
+		found := false
+		for _, n := range nodes {
+			if n == node {
+				found = true
+				break
+			}
+		}
+		if !found {
+			delete(ns.nodeUsage, node)
+		}
+	}
+
+	// Initialize usage for new nodes
+	for _, node := range ns.nodes {
+		if _, exists := ns.nodeUsage[node]; !exists {
+			ns.nodeUsage[node] = 0
+		}
+	}
+}
+
+// GetNextNode returns the next node for a specific position
+// This ensures each position consistently uses the same sequence of nodes
+func (ns *NodeSelector) GetNextNode(position uint32) string {
+	ns.mutex.Lock()
+	defer ns.mutex.Unlock()
+
+	if len(ns.nodes) == 0 {
+		return ""
+	}
+
+	// Get the current index for this position
+	idx, exists := ns.nextNodeIndex[position]
+	if !exists {
+		// First time for this position, use position % nodes.length as starting point
+		// This distributes positions across nodes from the beginning
+		idx = int(position) % len(ns.nodes)
+	}
+
+	// Get the node
+	node := ns.nodes[idx]
+
+	// Update usage statistics
+	ns.nodeUsage[node]++
+
+	// Advance to next node for next call
+	ns.nextNodeIndex[position] = (idx + 1) % len(ns.nodes)
+
+	return node
+}
+
+// GetLeastUsedNode returns the node with the least usage count
+func (ns *NodeSelector) GetLeastUsedNode() string {
+	ns.mutex.RLock()
+	defer ns.mutex.RUnlock()
+
+	if len(ns.nodes) == 0 {
+		return ""
+	}
+
+	var leastUsedNode string
+	leastUsage := -1
+
+	for _, node := range ns.nodes {
+		usage := ns.nodeUsage[node]
+		if leastUsage == -1 || usage < leastUsage {
+			leastUsage = usage
+			leastUsedNode = node
+		}
+	}
+
+	return leastUsedNode
+}
+
+// GetNodeUsage returns statistics about node usage
+func (ns *NodeSelector) GetNodeUsage() map[string]int {
+	ns.mutex.RLock()
+	defer ns.mutex.RUnlock()
+
+	// Create a copy of the usage statistics
+	usage := make(map[string]int, len(ns.nodeUsage))
+	for node, count := range ns.nodeUsage {
+		usage[node] = count
+	}
+
+	return usage
+}
+
+// RecordUsage increments the usage count for a specific node
+func (ns *NodeSelector) RecordUsage(nodeURL string) {
+	ns.mutex.Lock()
+	defer ns.mutex.Unlock()
+
+	if _, exists := ns.nodeUsage[nodeURL]; exists {
+		ns.nodeUsage[nodeURL]++
+	}
 }

@@ -23,9 +23,24 @@ func SendTransactionViaGRPC(
 	encodingConfig := params.MakeTestEncodingConfig()
 	encodingConfig.Codec = cdc
 
+	// Get the sequence manager for tracking sequences per node
+	sequenceManager := lib.GetSequenceManager()
+
+	// Use gRPC endpoint as the node identifier for sequence tracking
+	nodeURL := txParams.Config.Nodes.GRPC
+
+	// Make sure we use the node-specific sequence
+	nodeSpecificSequence, err := sequenceManager.GetSequence(txParams.AcctAddress, nodeURL, txParams.Config, false)
+	if err == nil && nodeSpecificSequence > sequence {
+		// Use the node's tracked sequence if it's higher
+		sequence = nodeSpecificSequence
+		fmt.Printf("Using node-specific sequence %d for %s on gRPC node %s\n",
+			sequence, txParams.AcctAddress, nodeURL)
+	}
+
 	// Log sequence use for debugging
-	fmt.Printf("Building transaction for %s with sequence %d\n",
-		txParams.AcctAddress, sequence)
+	fmt.Printf("Building transaction for %s with sequence %d on gRPC node %s\n",
+		txParams.AcctAddress, sequence, nodeURL)
 
 	// Allow up to one fee adjustment retry
 	maxRetries := 1
@@ -42,7 +57,7 @@ func SendTransactionViaGRPC(
 		}
 
 		// Create a context with timeout for just the broadcast operation
-		broadcastCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		broadcastCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
 		defer cancel()
 
 		// Broadcast the transaction via gRPC
@@ -66,7 +81,8 @@ func SendTransactionViaGRPC(
 			requiredAmount, requiredDenom, parseErr := lib.ExtractRequiredFee(errorMsg)
 			if parseErr == nil {
 				// For retry with higher fee, modify the config's gas strategy
-				fmt.Printf("Fee adjustment: Retry with fee %d%s\n", requiredAmount, requiredDenom)
+				fmt.Printf("Fee adjustment: Retry with fee %d%s on gRPC node %s\n",
+					requiredAmount, requiredDenom, nodeURL)
 
 				// Create a copy of the config to avoid modifying the original
 				updatedConfig := txParams.Config
@@ -97,6 +113,12 @@ func SendTransactionViaGRPC(
 			// Extract expected sequence if possible
 			expectedSeq, parseErr := lib.ExtractExpectedSequence(err.Error())
 			if parseErr == nil {
+				// Update sequence in our manager
+				sequenceManager.SetSequence(txParams.AcctAddress, nodeURL, expectedSeq)
+
+				fmt.Printf("Sequence mismatch: gRPC node %s expects sequence %d for %s (was: %d)\n",
+					nodeURL, expectedSeq, txParams.AcctAddress, sequence)
+
 				cancel() // Clean up the context
 				return nil, string(txBytes), fmt.Errorf("account sequence mismatch: expected %d, got %d",
 					expectedSeq, sequence)
@@ -122,6 +144,12 @@ func SendTransactionViaGRPC(
 			if strings.Contains(grpcRes.RawLog, "account sequence mismatch") {
 				expectedSeq, parseErr := lib.ExtractExpectedSequence(grpcRes.RawLog)
 				if parseErr == nil {
+					// Update sequence in our manager
+					sequenceManager.SetSequence(txParams.AcctAddress, nodeURL, expectedSeq)
+
+					fmt.Printf("Sequence mismatch in response: gRPC node %s expects sequence %d for %s (was: %d)\n",
+						nodeURL, expectedSeq, txParams.AcctAddress, sequence)
+
 					cancel() // Clean up the context
 					return grpcRes, string(txBytes), fmt.Errorf("account sequence mismatch: expected %d, got %d",
 						expectedSeq, sequence)
@@ -133,6 +161,13 @@ func SendTransactionViaGRPC(
 			cancel() // Clean up the context
 			return grpcRes, string(txBytes), fmt.Errorf("broadcast error code %d: %s", grpcRes.Code, grpcRes.RawLog)
 		}
+
+		// Transaction succeeded - update the sequence in our manager
+		sequenceManager.SetSequence(txParams.AcctAddress, nodeURL, sequence+1)
+
+		// Print transaction hash on success
+		fmt.Printf("Transaction successful! TxID: %s (sequence: %d, gRPC node: %s)\n",
+			grpcRes.TxHash, sequence, nodeURL)
 
 		// Success case
 		cancel() // Clean up the context

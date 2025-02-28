@@ -316,15 +316,24 @@ func prepareTransactionParams(
 	distributor *bankmodule.MultiSendDistributor,
 ) types.TransactionParams {
 	var nodeURL string
-	var txMsgType string
+
+	// Get node selector to distribute transactions across nodes
+	nodeSelector := broadcast.GetNodeSelector()
+	if len(config.Nodes.RPC) > 0 {
+		nodeSelector.SetNodes(config.Nodes.RPC)
+	}
 
 	if len(config.Nodes.RPC) > 0 {
 		if distributor != nil {
 			// Use the distributed approach with multiple RPCs
 			nodeURL = distributor.GetNextRPC()
 		} else {
-			// Use the simple approach with the first RPC
-			nodeURL = config.Nodes.RPC[0]
+			// Use the node selector to get the least used node
+			nodeURL = nodeSelector.GetLeastUsedNode()
+			if nodeURL == "" {
+				// Fallback to the first node if selection fails
+				nodeURL = config.Nodes.RPC[0]
+			}
 		}
 	}
 
@@ -333,10 +342,11 @@ func prepareTransactionParams(
 		nodeURL = "http://localhost:26657"
 	}
 
+	fmt.Printf("Position %d: Selected node %s for initial transactions\n", acct.Position, nodeURL)
+
 	// Get message type - either from config or default to bank_send
-	if config.MsgType != "" {
-		txMsgType = config.MsgType
-	} else {
+	txMsgType := config.MsgType
+	if txMsgType == "" {
 		txMsgType = "bank_send"
 	}
 
@@ -514,10 +524,26 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 }
 
 func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.Int, config types.Config) error {
+	// Get node selector to distribute transactions across nodes
+	nodeSelector := broadcast.GetNodeSelector()
+	if len(config.Nodes.RPC) > 0 {
+		nodeSelector.SetNodes(config.Nodes.RPC)
+	}
+
+	// Choose the least used node for this transfer
+	nodeURL := nodeSelector.GetLeastUsedNode()
+	if nodeURL == "" && len(config.Nodes.RPC) > 0 {
+		// Fallback to the first node if selection fails
+		nodeURL = config.Nodes.RPC[0]
+	}
+
+	fmt.Printf("Selected node %s for transfer from %s to %s\n",
+		nodeURL, sender.Address, receiverAddress)
+
 	// Create a transaction params struct for the funds transfer
 	txParams := types.TransactionParams{
 		Config:      config,
-		NodeURL:     config.Nodes.RPC[0],
+		NodeURL:     nodeURL,
 		ChainID:     config.Chain,
 		PrivKey:     sender.PrivKey,
 		PubKey:      sender.PubKey,
@@ -531,12 +557,13 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
 	maxRetries := 3
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		fmt.Printf("Attempt %d to send transaction with sequence %d\n", attempt+1, txParams.Sequence)
+		fmt.Printf("Attempt %d to send transaction with sequence %d on node %s\n",
+			attempt+1, txParams.Sequence, nodeURL)
 
 		// Create GRPC client with proper error handling
 		grpcClient, err := client.NewGRPCClient(config.Nodes.GRPC)
@@ -547,7 +574,7 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 
 		resp, _, err := broadcast.SendTransactionViaGRPC(ctx, txParams, txParams.Sequence, grpcClient)
 		if err != nil {
-			fmt.Printf("Transaction failed: %v\n", err)
+			fmt.Printf("Transaction failed on node %s: %v\n", nodeURL, err)
 
 			// Check if the error is a sequence mismatch error
 			if resp != nil && resp.Code == 32 {
@@ -555,15 +582,28 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 				if parseErr == nil {
 					// Update sequence and retry
 					txParams.Sequence = expectedSeq
-					fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", expectedSeq)
+					fmt.Printf("Sequence mismatch detected on node %s. Updating sequence to %d and retrying...\n",
+						nodeURL, expectedSeq)
 					continue
 				}
+			}
+
+			// For non-sequence errors, try a different node on next attempt
+			if attempt < maxRetries-1 {
+				oldNode := nodeURL
+				nodeURL = nodeSelector.GetNextNode(uint32(attempt))
+				if nodeURL == "" {
+					// Fallback if no node available
+					nodeURL = config.Nodes.RPC[0]
+				}
+				txParams.NodeURL = nodeURL
+				fmt.Printf("Switching from node %s to %s for next attempt\n", oldNode, nodeURL)
 			}
 			continue
 		}
 
 		if resp.Code != 0 {
-			fmt.Printf("Transaction failed with code %d: %s\n", resp.Code, resp.RawLog)
+			fmt.Printf("Transaction failed with code %d on node %s: %s\n", resp.Code, nodeURL, resp.RawLog)
 
 			// Check for sequence mismatch error
 			if resp.Code == 32 {
@@ -571,16 +611,36 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 				if parseErr == nil {
 					// Update sequence and retry
 					txParams.Sequence = expectedSeq
-					fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", expectedSeq)
+					fmt.Printf("Sequence mismatch detected on node %s. Updating sequence to %d and retrying...\n",
+						nodeURL, expectedSeq)
 					continue
 				}
 			}
-			return fmt.Errorf("transaction failed with code %d: %s", resp.Code, resp.RawLog)
+
+			// For other errors, try a different node if possible
+			if attempt < maxRetries-1 {
+				oldNode := nodeURL
+				nodeURL = nodeSelector.GetNextNode(uint32(attempt))
+				if nodeURL == "" {
+					// Fallback if no node available
+					nodeURL = config.Nodes.RPC[0]
+				}
+				txParams.NodeURL = nodeURL
+				fmt.Printf("Switching from node %s to %s for next attempt after error code %d\n",
+					oldNode, nodeURL, resp.Code)
+				continue
+			}
+
+			return fmt.Errorf("transaction failed with code %d on node %s: %s", resp.Code, nodeURL, resp.RawLog)
 		}
 
 		// Successfully broadcasted transaction
-		fmt.Printf("-> Successfully transferred %s %s from %s to %s\n",
-			amount.String(), config.Denom, sender.Address, receiverAddress)
+		fmt.Printf("-> Successfully transferred %s %s from %s to %s using node %s, txhash: %s\n",
+			amount.String(), config.Denom, sender.Address, receiverAddress, nodeURL, resp.TxHash)
+
+		// Record the successful usage of this node
+		nodeSelector.RecordUsage(nodeURL)
+
 		return nil
 	}
 
