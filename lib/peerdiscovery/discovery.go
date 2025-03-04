@@ -15,7 +15,10 @@ import (
 
 const (
 	// DefaultTimeout is the default timeout for RPC requests
-	DefaultTimeout = 5 * time.Second
+	DefaultTimeout = 10 * time.Second
+
+	// MaxRetries is the number of times to retry connecting to a node
+	MaxRetries = 3
 
 	// MaxConcurrentChecks is the maximum number of concurrent RPC checks
 	MaxConcurrentChecks = 50
@@ -57,6 +60,15 @@ func (pd *PeerDiscovery) DiscoverPeers(timeout time.Duration) ([]string, error) 
 	// Start a wait group to track all goroutines
 	var wg sync.WaitGroup
 
+	// Keep track of initial registry endpoints
+	registryEndpoints := make(map[string]bool)
+	for _, endpoint := range pd.initialEndpoints {
+		normalized := normalizeEndpoint(endpoint)
+		if normalized != "" {
+			registryEndpoints[normalized] = true
+		}
+	}
+
 	// Process the initial endpoints
 	for _, endpoint := range pd.initialEndpoints {
 		endpoint = normalizeEndpoint(endpoint)
@@ -86,13 +98,35 @@ func (pd *PeerDiscovery) DiscoverPeers(timeout time.Duration) ([]string, error) 
 		fmt.Println("Peer discovery timed out or was canceled.")
 	}
 
-	// Return the discovered endpoints
+	// Prepare the results with prioritization
 	pd.resultsMutex.RLock()
 	defer pd.resultsMutex.RUnlock()
 
-	// Make a copy to prevent external modification
-	results := make([]string, len(pd.openRPCEndpoints))
-	copy(results, pd.openRPCEndpoints)
+	// Separate discovered endpoints into registry and non-registry
+	var nonRegistryEndpoints []string
+	var regEndpoints []string
+
+	for _, endpoint := range pd.openRPCEndpoints {
+		if registryEndpoints[endpoint] {
+			regEndpoints = append(regEndpoints, endpoint)
+		} else {
+			nonRegistryEndpoints = append(nonRegistryEndpoints, endpoint)
+		}
+	}
+
+	// Prioritize non-registry endpoints, but include registry endpoints at the end
+	fmt.Printf("Found %d non-registry endpoints and %d registry endpoints.\n",
+		len(nonRegistryEndpoints), len(regEndpoints))
+
+	// Combine results with non-registry endpoints first
+	results := append(nonRegistryEndpoints, regEndpoints...)
+
+	// If we found no endpoints, try to return some registry endpoints as fallback
+	if len(results) == 0 && len(pd.initialEndpoints) > 0 {
+		fmt.Println("No endpoints discovered, using registry endpoints as fallback.")
+		results = make([]string, len(pd.initialEndpoints))
+		copy(results, pd.initialEndpoints)
+	}
 
 	return results, nil
 }
@@ -142,17 +176,43 @@ func (pd *PeerDiscovery) checkNode(nodeAddr string) {
 		}
 	}
 
-	// Create a client with timeout
-	client, err := http.NewWithTimeout(nodeAddr, "websocket", uint(DefaultTimeout.Milliseconds()))
-	if err != nil {
-		fmt.Printf("Failed to create client for %s: %v\n", nodeAddr, err)
+	// Try connecting with retries
+	var client *http.HTTP
+	var err error
+	var connected bool
+
+	for retry := 0; retry < MaxRetries; retry++ {
+		// If this is a retry, wait a bit before trying again
+		if retry > 0 {
+			time.Sleep(time.Duration(retry) * time.Second)
+			fmt.Printf("Retry %d/%d connecting to %s\n", retry, MaxRetries, nodeAddr)
+		}
+
+		// Create a client with timeout
+		client, err = http.NewWithTimeout(nodeAddr, "websocket", uint(DefaultTimeout.Milliseconds()))
+		if err != nil {
+			fmt.Printf("Attempt %d: Failed to create client for %s: %v\n", retry+1, nodeAddr, err)
+			continue
+		}
+
+		// Verify this is a working RPC endpoint
+		_, err = client.Status(pd.ctx)
+		if err == nil {
+			connected = true
+			break
+		}
+		fmt.Printf("Attempt %d: Failed to get status from %s: %v\n", retry+1, nodeAddr, err)
+	}
+
+	if !connected {
+		fmt.Printf("Failed to connect to %s after %d attempts\n", nodeAddr, MaxRetries)
 		return
 	}
 
-	// Verify this is a working RPC endpoint
+	// Get status now that we're connected
 	status, err := client.Status(pd.ctx)
 	if err != nil {
-		fmt.Printf("Failed to get status from %s: %v\n", nodeAddr, err)
+		fmt.Printf("Failed to get status from %s after successful connection: %v\n", nodeAddr, err)
 		return
 	}
 

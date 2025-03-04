@@ -174,7 +174,7 @@ func BuildTransaction(ctx context.Context, txParams *types.TxParams) ([]byte, er
 	}
 
 	// Get the client context
-	clientCtx, err := GetClientContext(txParams.Config, txParams.NodeURL)
+	clientCtx, err := P2PGetClientContext(txParams.Config, txParams.NodeURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get client context: %w", err)
 	}
@@ -626,8 +626,8 @@ func BuildAndSignTransaction(
 		txp.MsgParams["distributor"] = txParams.Distributor
 	}
 
-	// Use ClientContext with correct sequence
-	clientCtx, err := GetClientContext(txParams.Config, txParams.NodeURL)
+	// Get client context
+	clientCtx, err := P2PGetClientContext(txParams.Config, txParams.NodeURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get client context: %w", err)
 	}
@@ -996,7 +996,7 @@ func SendTx(
 	}
 
 	// Get client context for broadcast
-	clientCtx, err := GetClientContext(txParams.Config, txParams.NodeURL)
+	clientCtx, err := P2PGetClientContext(txParams.Config, txParams.NodeURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get client context: %w", err)
 	}

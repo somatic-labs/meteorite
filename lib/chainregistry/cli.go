@@ -102,7 +102,7 @@ func SelectChainInteractive(registry *Registry) (*ChainSelection, error) {
 	discovery := peerdiscovery.New(initialEndpoints)
 
 	// Discovery timeout (adjust as needed)
-	discoveryTimeout := 45 * time.Second
+	discoveryTimeout := 2 * time.Minute // Increased from 45 seconds to 2 minutes
 
 	// Discover additional peers
 	allEndpoints, err := discovery.DiscoverPeers(discoveryTimeout)
