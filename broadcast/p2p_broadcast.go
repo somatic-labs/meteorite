@@ -45,12 +45,20 @@ type Peer struct {
 	isConnected bool
 }
 
-// TxInfo tracks information about a transaction
+// TxInfo tracks information about a broadcasted transaction
 type TxInfo struct {
 	txHash        string
 	broadcastTime time.Time
 	sentToPeers   []string
+	response      *sdk.TxResponse
+	err           error
 }
+
+// accountToNodeMap maintains a consistent mapping between accounts and nodes
+var (
+	accountToNodeMap = make(map[string]string)
+	accountMapMutex  sync.RWMutex
+)
 
 // Global P2P broadcaster instance
 var (
@@ -408,16 +416,37 @@ func GetSeedNodesForChain(chainID string) []string {
 
 // P2PGetClientContext creates a client context for transaction handling
 func P2PGetClientContext(config types.Config, nodeURL string) (client.Context, error) {
+	// Make sure we have a valid node URL
+	if nodeURL == "" {
+		return client.Context{}, errors.New("node URL cannot be empty")
+	}
+
+	// Create a keyring backend - using in-memory for simplicity
+	kr := keyring.NewInMemory(nil)
+
 	// Create a basic client context
 	clientCtx := client.Context{
 		ChainID:       config.Chain,
 		NodeURI:       nodeURL,
-		Keyring:       keyring.NewInMemory(nil),
+		Keyring:       kr,
 		BroadcastMode: config.BroadcastMode,
 		Simulate:      false,
 		GenerateOnly:  false,
 		Offline:       false,
 		SkipConfirm:   true,
+		FromAddress:   nil, // Will be set per transaction
+		FromName:      "",  // Will be set per transaction
+	}
+
+	// Validate the node URL by attempting to connect
+	httpClient, err := client.NewClientFromNode(nodeURL)
+	if err != nil {
+		// Log the error but continue - we don't want to fail just because we can't connect
+		fmt.Printf("⚠️ Warning: Could not connect to node %s: %v\n", nodeURL, err)
+		// Continue anyway, as the context can still be used for offline operations
+	} else {
+		// Set the client if connection was successful
+		clientCtx = clientCtx.WithClient(httpClient)
 	}
 
 	return clientCtx, nil
@@ -441,4 +470,40 @@ func GetDefaultConfig(chainID string) *Config {
 		GasPrices:     "0.025uatom", // Default for cosmos hub
 		Fees:          "",
 	}
+}
+
+// MapAccountToNode ensures an account consistently uses the same node
+// This helps create disjoint mempool states for testing
+func MapAccountToNode(accountAddress string, availableNodes []string) string {
+	if len(availableNodes) == 0 {
+		return ""
+	}
+
+	accountMapMutex.RLock()
+	nodeURL, exists := accountToNodeMap[accountAddress]
+	accountMapMutex.RUnlock()
+
+	if exists && nodeURL != "" {
+		return nodeURL
+	}
+
+	// Create a deterministic mapping based on the address
+	// Convert the address to bytes and use it to determine the node index
+	addrBytes := []byte(accountAddress)
+	var sum uint64
+	for _, b := range addrBytes {
+		sum += uint64(b)
+	}
+
+	// Select a node based on the account address
+	selectedIdx := int(sum % uint64(len(availableNodes)))
+	selectedNode := availableNodes[selectedIdx]
+
+	// Store the mapping
+	accountMapMutex.Lock()
+	accountToNodeMap[accountAddress] = selectedNode
+	accountMapMutex.Unlock()
+
+	fmt.Printf("🔗 Mapped account %s to node %s\n", accountAddress, selectedNode)
+	return selectedNode
 }

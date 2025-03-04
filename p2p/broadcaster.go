@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -36,10 +37,10 @@ type BroadcastResult struct {
 	Height    int64
 }
 
-// P2PBroadcaster is responsible for broadcasting transactions through the P2P network
-type P2PBroadcaster struct {
+// Broadcaster is responsible for broadcasting transactions through the P2P network
+type Broadcaster struct {
 	seedPeers     []string
-	client        *P2PClient
+	client        *Client
 	mnemonic      string
 	chainID       string
 	logger        *log.Logger
@@ -48,10 +49,10 @@ type P2PBroadcaster struct {
 }
 
 // NewP2PBroadcaster creates a new P2P broadcaster
-func NewP2PBroadcaster(seedPeers []string, mnemonic, chainID string) (*P2PBroadcaster, error) {
+func NewP2PBroadcaster(seedPeers []string, mnemonic, chainID string) (*Broadcaster, error) {
 	logger := log.Default()
 
-	return &P2PBroadcaster{
+	return &Broadcaster{
 		seedPeers:     seedPeers,
 		mnemonic:      mnemonic,
 		chainID:       chainID,
@@ -61,7 +62,7 @@ func NewP2PBroadcaster(seedPeers []string, mnemonic, chainID string) (*P2PBroadc
 }
 
 // Initialize initializes the P2P client
-func (b *P2PBroadcaster) Initialize() error {
+func (b *Broadcaster) Initialize() error {
 	b.mtx.Lock()
 	defer b.mtx.Unlock()
 
@@ -70,7 +71,7 @@ func (b *P2PBroadcaster) Initialize() error {
 	}
 
 	// Create P2P client
-	client, err := NewP2PClient(b.seedPeers, b.mnemonic, b.chainID)
+	client, err := NewClient(b.seedPeers, b.mnemonic, b.chainID)
 	if err != nil {
 		return fmt.Errorf("failed to create P2P client: %w", err)
 	}
@@ -86,87 +87,108 @@ func (b *P2PBroadcaster) Initialize() error {
 }
 
 // Shutdown shuts down the P2P client
-func (b *P2PBroadcaster) Shutdown() {
+func (b *Broadcaster) Shutdown() {
 	b.mtx.Lock()
 	defer b.mtx.Unlock()
 
-	if b.client != nil {
-		b.client.Stop()
-		b.client = nil
+	if !b.isInitialized || b.client == nil {
+		return
 	}
 
+	b.client.Stop()
+	b.client = nil
 	b.isInitialized = false
 }
 
 // BroadcastTx broadcasts a transaction through the P2P network
-func (b *P2PBroadcaster) BroadcastTx(txBytes []byte) (*BroadcastResult, error) {
+func (b *Broadcaster) BroadcastTx(txBytes []byte) (*BroadcastResult, error) {
 	b.mtx.Lock()
-	if !b.isInitialized {
-		if err := b.Initialize(); err != nil {
-			b.mtx.Unlock()
-			return nil, fmt.Errorf("failed to initialize P2P client: %w", err)
-		}
-	}
+	initialized := b.isInitialized
 	b.mtx.Unlock()
 
-	// Generate a hash for tracking this tx
+	if !initialized {
+		if err := b.Initialize(); err != nil {
+			return nil, fmt.Errorf("failed to initialize P2P broadcaster: %w", err)
+		}
+	}
+
+	if b.client == nil {
+		return nil, errors.New("P2P client is not initialized")
+	}
+
+	// Create a hash of the transaction for tracking
 	hash := sha256.Sum256(txBytes)
 	txHash := hex.EncodeToString(hash[:])
 
+	// Log the transaction broadcast
+	b.logger.Printf("Broadcasting transaction with hash %s", txHash)
+
 	// Broadcast the transaction
-	if err := b.client.BroadcastTx(txBytes); err != nil {
+	err := b.client.BroadcastTx(txBytes)
+	if err != nil {
 		return nil, fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
 
-	// Since we're not really getting a response from the network in this simplified version,
-	// we'll just return a synthetic success result
-	b.logger.Printf("Transaction broadcast successful, hash: %s", txHash)
+	// Return a synthetic success result
 	return &BroadcastResult{
 		Code:   0,
-		Log:    "success",
+		Log:    "Transaction broadcast through P2P network",
 		TxHash: txHash,
-		Height: 0,
+		Height: -1, // unknown height
 	}, nil
 }
 
-// FindPeers finds and connects to peers
-func (b *P2PBroadcaster) FindPeers(ctx context.Context) error {
+// FindPeers attempts to connect to peers in the network
+func (b *Broadcaster) FindPeers(ctx context.Context) error {
 	b.mtx.Lock()
-	if !b.isInitialized {
-		if err := b.Initialize(); err != nil {
-			b.mtx.Unlock()
-			return fmt.Errorf("failed to initialize P2P client: %w", err)
-		}
-	}
+	initialized := b.isInitialized
 	b.mtx.Unlock()
 
-	// Log that we're starting peer discovery
-	b.logger.Printf("Starting peer discovery with %d seed nodes", len(b.seedPeers))
-
-	// In a real implementation, we would use the seed nodes to discover more peers
-	// For now, we'll just connect to the seed nodes directly
-	for _, seedAddr := range b.seedPeers {
-		// Parse the address
-		addr, err := b.parseAddress(seedAddr)
-		if err != nil {
-			b.logger.Printf("Failed to parse seed address %s: %v", seedAddr, err)
-			continue
+	if !initialized {
+		if err := b.Initialize(); err != nil {
+			return fmt.Errorf("failed to initialize P2P broadcaster: %w", err)
 		}
-
-		// Connect to the peer asynchronously
-		go func(addr *NetAddress) {
-			err := b.client.connectToPeer(addr.ID, addr.IP.String(), int(addr.Port))
-			if err != nil {
-				b.logger.Printf("Failed to connect to peer %s: %v", addr.ID, err)
-			}
-		}(addr)
 	}
 
-	return nil
+	// Use the context to potentially cancel the peer discovery process
+	done := make(chan struct{})
+	go func() {
+		// Loop through any hardcoded seed nodes and connect to them
+		for _, seedAddr := range b.seedPeers {
+			// Check if context is canceled
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				// Continue with peer connection
+			}
+
+			// Parse the address
+			addr, err := b.parseAddress(seedAddr)
+			if err != nil {
+				b.logger.Printf("Failed to parse seed address %s: %v", seedAddr, err)
+				continue
+			}
+
+			// Connect to the peer asynchronously
+			go func(addr *NetAddress) {
+				b.client.connectToPeer(addr.ID, addr.IP.String(), int(addr.Port))
+			}(addr)
+		}
+		close(done)
+	}()
+
+	// Wait for peer discovery to complete or context to be canceled
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
-// parseAddress parses a string address into a NetAddress
-func (b *P2PBroadcaster) parseAddress(addrStr string) (*NetAddress, error) {
+// parseAddress parses a string address into a NetAddress struct
+func (b *Broadcaster) parseAddress(addrStr string) (*NetAddress, error) {
 	// Format expected: "node_id@ip:port"
 	parts := strings.Split(addrStr, "@")
 	if len(parts) != 2 {

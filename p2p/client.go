@@ -45,7 +45,7 @@ type p2pPeer struct {
 }
 
 // NewClient creates a new P2P client
-func NewClient(seedPeers []string, _ string, chainID string) (*Client, error) {
+func NewClient(seedPeers []string, _, chainID string) (*Client, error) {
 	// Generate a random node ID
 	nodeID, err := generateRandomID()
 	if err != nil {
@@ -126,7 +126,7 @@ func (c *Client) BroadcastTx(tx []byte) error {
 	c.logger.Printf("Broadcasting transaction to %d peers", len(c.peers))
 
 	// Record this transaction in the responses map to track it
-	txID := fmt.Sprintf("%x", tx[:8]) // Use first 8 bytes as ID
+	txID := hex.EncodeToString(tx[:8]) // Use first 8 bytes as ID
 	c.txRespMtx.Lock()
 	c.txResponses[txID] = make(chan interface{}, 1)
 	c.txRespMtx.Unlock()
@@ -168,7 +168,7 @@ func (c *Client) connectToPeers() {
 }
 
 // connectToPeer connects to a specific peer
-func (c *Client) connectToPeer(id, ip string, port int) error {
+func (c *Client) connectToPeer(id, ip string, port int) {
 	addr := fmt.Sprintf("%s:%d", ip, port)
 	c.logger.Printf("Connecting to peer: %s", addr)
 
@@ -186,7 +186,6 @@ func (c *Client) connectToPeer(id, ip string, port int) error {
 	c.peersMtx.Unlock()
 
 	c.logger.Printf("Connected to peer %s", peer.id)
-	return nil
 }
 
 // processMessages processes outgoing transaction messages

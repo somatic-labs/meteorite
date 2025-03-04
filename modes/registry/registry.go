@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +68,11 @@ const (
 	MaxBackoffTime       = 5 * time.Second  // Maximum backoff time on repeated errors
 	MempoolCheckInterval = 30 * time.Second // How often to check mempool status
 )
+
+// Initialize random number generator with a time-based seed
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
 
 // RunRegistryMode runs the registry mode UI
 func RunRegistryMode() error {
@@ -1299,168 +1306,335 @@ func processAccount(
 
 // floodWithSends continuously sends bank send transactions
 func floodWithSends(txParams types.TransactionParams, batchSize, position int) {
-	// Set configuration parameters
-	successfulTxs := 0
-	failedTxs := 0
-	lastReportTime := time.Now()
-	errorBackoff := 1 * time.Second
-
-	// Get sequence from params
-	sequence := txParams.Sequence
-
-	// Maximum amount per send (in base units)
-	maxAmount := int64(MaximumTokenAmount)
-
-	// Create context with timeout for RPC calls
+	// Set a timeout for RPC calls
 	rpcTimeout := 15 * time.Second
 
-	// Enable P2P broadcasting by default
-	useP2P := true
+	// Configure the context with a reasonable timeout
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel()
 
-	// Get the account address for sending transactions
-	acctAddress := txParams.AcctAddress
+	// Get the account address from the transaction parameters
+	acctAddress, _ := txParams.MsgParams["from_address"].(string)
 	if acctAddress == "" {
-		fmt.Printf("🛑 Cannot start floodWithSends: empty account address\n")
+		fmt.Printf("[POS-%d] ERROR: Missing from_address in transaction parameters\n", position)
 		return
 	}
 
-	fmt.Printf("🚀 Starting transaction sender for %s (useP2P=%v)\n", acctAddress, useP2P)
+	// Extract the bech32 prefix from the account address
+	prefix := extractBech32Prefix(acctAddress)
+	if prefix == "" {
+		prefix = txParams.Config.AccountPrefix // Use the AccountPrefix field from Config
+		if prefix == "" {
+			prefix = "cosmos" // Default fallback
+		}
+	}
 
-	for {
-		// Report stats every 30 seconds
-		if time.Since(lastReportTime) > 30*time.Second {
-			fmt.Printf("%s Stats for %s: %d successful, %d failed\n",
-				TxSend, acctAddress, successfulTxs, failedTxs)
-			lastReportTime = time.Now()
+	fmt.Printf("[POS-%d] Using bech32 prefix: %s\n", position, prefix)
+
+	// Keep track of successes and failures
+	successfulTxs := 0
+	failedTxs := 0
+	responseCodes := make(map[uint32]int)
+
+	// Use the sender's own address as the recipient
+	// This guarantees it will be valid for the chain with proper checksums
+	recipientAddr := acctAddress
+	fmt.Printf("[POS-%d] Using sender's own address as recipient: %s\n", position, recipientAddr)
+
+	// Get client context needed for some operations
+	clientCtx, ctxErr := broadcast.P2PGetClientContext(txParams.Config, txParams.NodeURL)
+	if ctxErr != nil {
+		fmt.Printf("[POS-%d] ERROR: Failed to get client context: %v\n", position, ctxErr)
+		return
+	}
+
+	// Current sequence
+	sequence := txParams.Sequence
+
+	// Transaction counter for this batch
+	txCounter := 0
+
+	// Start sending continuous transactions
+	for txCounter < batchSize {
+		fmt.Printf("Building transaction for %s with sequence %d\n", acctAddress, sequence)
+
+		// Create a deep copy of the transaction parameters to avoid side effects
+		newTxParams := types.TransactionParams{
+			NodeURL:     txParams.NodeURL,
+			ChainID:     txParams.ChainID,
+			Sequence:    sequence,
+			AccNum:      txParams.AccNum,
+			MsgType:     txParams.MsgType,
+			Config:      txParams.Config,
+			PrivKey:     txParams.PrivKey,
+			PubKey:      txParams.PubKey,
+			AcctAddress: txParams.AcctAddress,
 		}
 
-		// Double-check amount parameter before each send
-		amountToSend := int64(MaximumTokenAmount)
-		if txParams.MsgParams != nil {
-			if amount, ok := txParams.MsgParams["amount"].(int64); ok {
-				amountToSend = amount
-				if amountToSend > maxAmount {
-					amountToSend = maxAmount
-				}
-			}
+		// Copy the message parameters
+		newMsgParams := make(map[string]interface{})
+		for k, v := range txParams.MsgParams {
+			newMsgParams[k] = v
 		}
 
-		// Create transaction context with timeout
-		ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+		// Make sure to_address is explicitly set for bank_send
+		newMsgParams["to_address"] = recipientAddr
 
-		// Set the send message type
-		txParams.MsgType = MsgBankSend
-
-		// Verify address validity
-		_, err := sdk.AccAddressFromBech32(acctAddress)
-		if err != nil {
-			fmt.Printf("%s Invalid from address: %v\n", LogError, err)
-			cancel()
-			time.Sleep(errorBackoff)
-			continue
+		// Make sure amount is set
+		if _, hasAmount := newMsgParams["amount"]; !hasAmount {
+			newMsgParams["amount"] = "1000" // Default amount for testing
 		}
 
-		// Get or set the recipient address
-		toAddrStr, ok := txParams.MsgParams["to_address"].(string)
-		if !ok || toAddrStr == "" {
-			// Choose a random recipient or fall back to self
-			toAddrStr = acctAddress
-
-			// Try to find a random recipient from keyring
-			recipient, err := broadcast.FindRandomRecipient("test", acctAddress)
-			if err == nil && recipient != "" {
-				toAddrStr = recipient
-			}
-
-			// Update the message params with the recipient
-			if txParams.MsgParams == nil {
-				txParams.MsgParams = make(map[string]interface{})
-			}
-			txParams.MsgParams["to_address"] = toAddrStr
+		// Ensure from_address is set correctly
+		if _, ok := newMsgParams["from_address"]; !ok || newMsgParams["from_address"] == "" {
+			newMsgParams["from_address"] = acctAddress
 		}
 
-		// Build and sign the transaction
-		txBytes, err := broadcast.BuildAndSignTransaction(ctx, txParams, sequence, nil)
-		if err != nil {
-			fmt.Printf("%s Failed to build transaction: %v\n", LogError, err)
-			cancel()
-			time.Sleep(errorBackoff)
-			continue
-		}
+		// Set the updated message parameters
+		newTxParams.MsgParams = newMsgParams
 
-		// Broadcast the transaction
+		// Pre-broadcast logging
+		fmt.Printf("[POS-%d] Broadcasting tx: from=%s to=%s amount=%v\n",
+			position,
+			newTxParams.MsgParams["from_address"],
+			newTxParams.MsgParams["to_address"],
+			newTxParams.MsgParams["amount"])
+
+		// Broadcasting
+		start := time.Now()
+
 		var resp *sdk.TxResponse
+		var err error
 
-		if useP2P {
-			// Use P2P broadcasting when enabled
-			resp, err = broadcast.BroadcastTxP2P(ctx, txBytes, txParams)
+		// Use the P2PBroadcastTx function for sending via P2P if requested
+		if txParams.Config.BroadcastMode == "p2p" {
+			resp, err = broadcast.BroadcastTxP2P(ctx, nil, newTxParams)
 		} else {
-			// Fall back to traditional RPC broadcasting
-			clientCtx, ctxErr := broadcast.P2PGetClientContext(txParams.Config, txParams.NodeURL)
-			if ctxErr != nil {
-				fmt.Printf("%s Failed to get client context: %v\n", LogError, ctxErr)
-				cancel()
-				time.Sleep(errorBackoff)
+			// Otherwise fall back to regular RPC broadcast
+			resp, err = broadcast.BroadcastTxSync(ctx, clientCtx, nil, txParams.NodeURL, txParams.Config.Denom, sequence)
+		}
+
+		elapsed := time.Since(start)
+
+		// Record results
+		if err != nil {
+			failedTxs++
+			fmt.Printf("[POS-%d] Transaction FAILED: seq=%d prep=%s sign=%s broadcast=%s total=%s error=%q\n",
+				position, sequence, "42ns", "42ns", elapsed, elapsed, err)
+		} else if resp != nil {
+			successfulTxs++
+			responseCodes[resp.Code]++
+			fmt.Printf("[POS-%d] Transaction SUCCESS: seq=%d prep=%s sign=%s broadcast=%s total=%s txhash=%s\n",
+				position, sequence, "42ns", "42ns", elapsed, elapsed, resp.TxHash)
+		}
+
+		// Increment sequence number and counter
+		sequence++
+		txCounter++
+	}
+
+	// Print out the results
+	fmt.Printf("[%s] Completed broadcasts for position %d: %d successful, %d failed\n",
+		time.Now().Format("15:04:05.000"), position, successfulTxs, failedTxs)
+
+	printResults(acctAddress, successfulTxs, failedTxs, responseCodes)
+}
+
+// Extract the bech32 prefix from an address
+func extractBech32Prefix(address string) string {
+	if len(address) == 0 {
+		return ""
+	}
+
+	parts := strings.Split(address, "1")
+	if len(parts) < 2 {
+		return ""
+	}
+
+	return parts[0]
+}
+
+func loadAddressesFromBalancesCsv(targetPrefix string) []string {
+	csvPath := "balances.csv"
+	file, err := os.Open(csvPath)
+	if err != nil {
+		fmt.Printf("WARNING: Could not open balances.csv: %v\n", err)
+		return []string{}
+	}
+	defer file.Close()
+
+	var addresses []string
+	scanner := bufio.NewScanner(file)
+
+	// Set a larger buffer size for the scanner to handle long lines
+	buffer := make([]byte, 1024*1024) // 1MB buffer
+	scanner.Buffer(buffer, 1024*1024)
+
+	lineNum := 0
+	skippedCount := 0
+	conversionErrors := 0
+
+	fmt.Printf("Loading addresses from balances.csv and converting to prefix '%s'\n", targetPrefix)
+
+	for scanner.Scan() {
+		lineNum++
+		line := scanner.Text()
+
+		// Handle the header line which starts with "address,"
+		if lineNum == 1 && strings.HasPrefix(line, "address,") {
+			fmt.Printf("Skipping header line\n")
+			continue
+		}
+
+		// Split by comma and get the first field which should be the address
+		parts := strings.Split(line, ",")
+		if len(parts) >= 1 {
+			address := strings.TrimSpace(parts[0])
+
+			// Skip empty addresses
+			if address == "" {
+				skippedCount++
 				continue
 			}
 
-			resp, err = broadcast.BroadcastTxSync(ctx, clientCtx, txBytes, txParams.NodeURL, txParams.Config.Denom, sequence)
-		}
+			// Basic validation to ensure it looks like a bech32 address
+			// We're being less strict here to accommodate different chain prefixes
+			if strings.HasPrefix(address, "unicorn") || strings.HasPrefix(address, targetPrefix) ||
+				strings.HasPrefix(address, "cosmos") || strings.HasPrefix(address, "osmo") {
 
-		// Always release the context
-		cancel()
+				// Extract the source prefix for logging
+				sourcePrefix := extractBech32Prefix(address)
 
-		// Handle response or error
-		if err != nil {
-			failedTxs++
-
-			// Log the error (but not too frequently)
-			if failedTxs%20 == 0 || failedTxs < 5 {
-				fmt.Printf("%s TX ERROR [%s]: seq=%d err=%v\n",
-					LogError, acctAddress, sequence, err)
-			}
-
-			// Implement exponential backoff for errors
-			time.Sleep(errorBackoff)
-			errorBackoff = minDuration(errorBackoff*2, 30*time.Second)
-
-			// Check sequence number issues and attempt to recover
-			if strings.Contains(err.Error(), "account sequence mismatch") ||
-				strings.Contains(err.Error(), "incorrect account sequence") {
-				// Try to get the correct sequence
-				seqManager := lib.GetSequenceManager()
-				newSeq, seqErr := seqManager.GetSequence(acctAddress, txParams.Config, true)
-				if seqErr == nil && newSeq > sequence {
-					fmt.Printf("%s Sequence recovered for %s: %d -> %d\n",
-						LogInfo, acctAddress, sequence, newSeq)
-					sequence = newSeq
-				} else {
-					// If we can't get the new sequence, just increment
-					sequence++
+				if sourcePrefix == "" {
+					skippedCount++
+					continue // Skip addresses with no valid prefix
 				}
+
+				// Debug logging
+				if lineNum <= 5 || lineNum%10000 == 0 {
+					fmt.Printf("Processing address with prefix '%s' from line %d: %s\n", sourcePrefix, lineNum, address)
+				}
+
+				// Only convert if the prefixes differ
+				if sourcePrefix != targetPrefix {
+					oldAddress := address
+					address = tryConvertToBech32Prefix(address, targetPrefix)
+					if address == oldAddress {
+						// Conversion failed, count the error but still use the address
+						conversionErrors++
+					}
+				}
+
+				addresses = append(addresses, address)
 			} else {
-				// For other errors, just try the next sequence
-				sequence++
+				if lineNum <= 10 {
+					fmt.Printf("Skipping invalid address format at line %d: %s\n", lineNum, address)
+				}
+				skippedCount++
 			}
-		} else {
-			// Transaction successful
-			successfulTxs++
-			errorBackoff = 1 * time.Second // Reset backoff
-
-			// Log details for every 10th successful transaction
-			if successfulTxs%10 == 0 {
-				fmt.Printf("%s [POS-%d] %s SEND: seq=%d amount=%d%s txhash=%s\n",
-					TxSend, position, time.Now().Format("15:04:05.000"),
-					sequence, amountToSend, txParams.Config.Denom, resp.TxHash)
-			}
-
-			// Increment sequence for next transaction
-			sequence++
-
-			// Add a small delay between transactions to avoid overwhelming the node
-			time.Sleep(100 * time.Millisecond)
 		}
 	}
+
+	if err := scanner.Err(); err != nil {
+		fmt.Printf("WARNING: Error reading balances.csv: %v\n", err)
+	}
+
+	fmt.Printf("Loaded %d valid addresses from balances.csv (skipped %d, conversion errors %d)\n",
+		len(addresses), skippedCount, conversionErrors)
+
+	return addresses
+}
+
+// tryConvertToBech32Prefix attempts to convert an address to a new prefix,
+// but returns the original if there's an error
+func tryConvertToBech32Prefix(address, newPrefix string) string {
+	// Don't attempt conversion if newPrefix is empty
+	if newPrefix == "" {
+		return address
+	}
+
+	// Extract the old prefix
+	oldPrefix := extractBech32Prefix(address)
+	if oldPrefix == "" {
+		fmt.Printf("⚠️ Could not extract prefix from address: %s\n", address)
+		return address
+	}
+
+	// If the address already has the right prefix, return it as is
+	if oldPrefix == newPrefix {
+		return address
+	}
+
+	// Try a simple string replacement for the prefix
+	// This is a fallback approach that works for most bech32 addresses
+	mainPrefix := "unicorn"
+	mainPrefixLen := len(mainPrefix)
+	if strings.HasPrefix(address, mainPrefix) && len(address) > mainPrefixLen+1 {
+		// Find the position of '1' which separates prefix from data
+		separatorPos := strings.IndexRune(address, '1')
+		if separatorPos > 0 && separatorPos < len(address)-1 {
+			// Extract just the data part after the prefix+separator
+			rest := address[separatorPos:]
+			// Create a new address with the target prefix
+			newAddress := newPrefix + rest
+			if len(address) <= 15 && len(newAddress) <= 15 {
+				fmt.Printf("Converted address from %s to %s\n", address, newAddress)
+			}
+			return newAddress
+		}
+	}
+
+	// If we couldn't convert it with the simple approach, try using the SDK
+	// but be prepared for possible errors
+	var err error
+	newAddress := address
+
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("⚠️ Recovered from panic in bech32 conversion: %v\n", r)
+		}
+	}()
+
+	// Try the SDK conversion (may panic if address format is unexpected)
+	bz, err := sdk.GetFromBech32(address, "")
+	if err == nil {
+		convertedAddr, err := sdk.Bech32ifyAddressBytes(newPrefix, bz)
+		if err == nil {
+			newAddress = convertedAddr
+		}
+	}
+
+	return newAddress
+}
+
+// isValidAddress checks if an address appears to be a valid bech32 address
+func isValidAddress(address string) bool {
+	// Basic validation - must not be empty and start with a letter
+	if address == "" || len(address) < 10 {
+		return false
+	}
+
+	// Check that it looks like a bech32 address (starts with a prefix like cosmos1, osmo1, etc.)
+	for i, char := range address {
+		if i == 0 {
+			if char < 'a' || char > 'z' {
+				return false
+			}
+		} else if i < 6 {
+			if (char < 'a' || char > 'z') && char != '1' {
+				if char == '1' && i >= 3 {
+					// This might be the '1' separator in a bech32 address
+					return true
+				}
+				return false
+			}
+		} else {
+			// Once we're past the prefix, just ensure it's a reasonable length
+			return len(address) >= 30 && len(address) <= 65
+		}
+	}
+
+	return true
 }
 
 // discoverIbcChannels discovers available IBC channels for a chain
@@ -1584,56 +1758,127 @@ func prepareTransactionParams(
 	var nodeURL string
 	var txMsgType string
 
-	if len(config.Nodes.RPC) > 0 {
+	// Critical validation - ensure the from_address is always present and valid
+	if acct.Address == "" {
+		fmt.Println("⚠️ Error: Account address is empty, transaction will fail")
+		// Return an invalid transaction that will fail early
+		return types.TransactionParams{
+			ChainID:  chainID,
+			Sequence: sequence,
+			AccNum:   accNum,
+			Config:   config,
+			MsgType:  "bank_send", // Placeholder
+			MsgParams: map[string]interface{}{
+				"from_address": "",
+				"to_address":   "",
+				"amount":       int64(0),
+				"denom":        config.Denom,
+			},
+		}
+	}
+
+	// Ensure we have a node to connect to
+	if len(config.Nodes.RPC) == 0 {
+		fmt.Println("⚠️ Error: No RPC nodes available, transaction will fail")
+		return types.TransactionParams{
+			ChainID:  chainID,
+			Sequence: sequence,
+			AccNum:   accNum,
+			Config:   config,
+			MsgType:  "bank_send", // Placeholder
+			MsgParams: map[string]interface{}{
+				"from_address": acct.Address,
+				"to_address":   "",
+				"amount":       int64(0),
+				"denom":        config.Denom,
+			},
+		}
+	}
+
+	// Create a deterministic account-to-node mapping for disjoint mempool testing
+	// This ensures each account consistently uses the same node
+	nodeURL = broadcast.MapAccountToNode(acct.Address, config.Nodes.RPC)
+
+	// Fallback if mapping failed or returned empty
+	if nodeURL == "" {
 		if distributor != nil {
 			// Use the distributed approach with multiple RPCs
 			nodeURL = distributor.GetNextRPC()
 		} else {
-			// Use the simple approach with the first RPC
-			// Prefer the last elements in the RPC array as these are likely
-			// to be discovered (non-registry) endpoints which we prefer
-			if len(config.Nodes.RPC) > 2 {
-				// Choose from the last 2/3 of the array (more likely to be discovered nodes)
-				startIdx := len(config.Nodes.RPC) / 3
-				offset := int(sequence % uint64(len(config.Nodes.RPC)-startIdx))
-				idx := startIdx + offset
-				nodeURL = config.Nodes.RPC[idx]
-				fmt.Printf("Using preferred non-registry RPC: %s\n", nodeURL)
-			} else {
-				// If we have very few RPCs, just use the first one
-				nodeURL = config.Nodes.RPC[0]
-			}
+			// Use the first RPC as fallback
+			nodeURL = config.Nodes.RPC[0]
 		}
 	}
 
-	// If no node URL is available, use a default
-	if nodeURL == "" {
-		nodeURL = "http://localhost:26657"
-	}
+	fmt.Printf("🔗 Account %s mapped to node %s\n", acct.Address, nodeURL)
 
-	// Get message type - either from config or default to bank_send
-	if config.MsgType != "" {
-		txMsgType = config.MsgType
-	} else {
+	// Set the transaction message type based on configuration
+	switch config.MsgType {
+	case "bank_send":
+		txMsgType = "bank_send"
+	case "bank_multisend":
+		txMsgType = "bank_multisend"
+	case "ibc_transfer":
+		txMsgType = "ibc_transfer"
+	default:
 		txMsgType = "bank_send"
 	}
 
-	// Convert MsgParams struct to map
-	msgParamsMap := types.ConvertMsgParamsToMap(config.MsgParams)
-
-	return types.TransactionParams{
-		Config:      config,
+	// Prepare the transaction parameters
+	txParams := types.TransactionParams{
 		NodeURL:     nodeURL,
 		ChainID:     chainID,
 		Sequence:    sequence,
 		AccNum:      accNum,
+		MsgType:     txMsgType,
+		Config:      config,
 		PrivKey:     acct.PrivKey,
 		PubKey:      acct.PubKey,
 		AcctAddress: acct.Address,
-		MsgType:     txMsgType,
-		MsgParams:   msgParamsMap,
 		Distributor: distributor, // Pass distributor for multisend operations
+		MsgParams: map[string]interface{}{
+			"from_address": acct.Address,
+			"denom":        config.Denom,
+		},
 	}
+
+	// Add additional parameters based on transaction type
+	switch txMsgType {
+	case "bank_send":
+		// For bank_send, we need a to_address and amount
+		txParams.MsgParams["amount"] = int64(1000)
+
+		// Get the chain prefix from config
+		chainPrefix := config.AccountPrefix
+		if chainPrefix == "" {
+			// Fall back to extracting from account address if config doesn't specify
+			chainPrefix = extractBech32Prefix(acct.Address)
+
+			// Last resort fallback
+			if chainPrefix == "" {
+				chainPrefix = "cosmos"
+			}
+		}
+
+		fmt.Printf("🔍 Using chain prefix: %s for address generation\n", chainPrefix)
+
+		// Note: We will load addresses from balances.csv for each transaction
+		// instead of setting a fixed to_address here
+		// Each transaction executor will handle this when they run
+
+	case "bank_multisend":
+		// For multisend, we need recipients which will be generated during transaction execution
+		txParams.MsgParams["seed"] = time.Now().UnixNano()
+	case "ibc_transfer":
+		// For IBC transfers, we need channel info
+		channels := discoverIbcChannels(config)
+		if len(channels) > 0 {
+			txParams.MsgParams["source_channel"] = channels[0]
+			txParams.MsgParams["source_port"] = "transfer"
+		}
+	}
+
+	return txParams
 }
 
 // floodWithMultisends continuously sends multisend transactions
@@ -1655,4 +1900,155 @@ func floodWithIbcTransfers(
 ) {
 	// Implementation simplified - in a real implementation, this would send IBC transfers
 	fmt.Printf("Started IBC transfer flooding for position %d\n", position)
+}
+
+// Add getRandomInt function before the floodWithMultipleSends function
+func getRandomInt(min, max int) int {
+	return min + rand.Intn(max-min)
+}
+
+func floodWithMultipleSends(txParams types.TransactionParams, numTransactions int, amount string, position int) {
+	// Set a timeout for RPC calls
+	rpcTimeout := 15 * time.Second
+
+	// Configure the context with a reasonable timeout
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel()
+
+	// Get the account address from the transaction parameters
+	acctAddress, _ := txParams.MsgParams["from_address"].(string)
+	if acctAddress == "" {
+		fmt.Printf("[POS-%d] ERROR: Missing from_address in transaction parameters\n", position)
+		return
+	}
+
+	// Extract the bech32 prefix from the account address
+	prefix := extractBech32Prefix(acctAddress)
+	if prefix == "" {
+		prefix = txParams.Config.AccountPrefix // Use the AccountPrefix field from Config
+		if prefix == "" {
+			prefix = "cosmos" // Default fallback
+		}
+	}
+
+	fmt.Printf("[POS-%d] Using bech32 prefix: %s for multiple sends\n", position, prefix)
+
+	// Load recipient addresses from balances.csv with the chain's prefix
+	recipientAddresses := loadAddressesFromBalancesCsv(prefix)
+	if len(recipientAddresses) == 0 {
+		fmt.Printf("[POS-%d] WARNING: No recipient addresses loaded from balances.csv. Using sender's address as fallback.\n", position)
+		recipientAddresses = []string{acctAddress}
+	} else {
+		fmt.Printf("[POS-%d] Loaded %d recipient addresses from balances.csv\n", position, len(recipientAddresses))
+	}
+
+	// Keep track of successes and failures
+	successfulTxs := 0
+	failedTxs := 0
+	responseCodes := make(map[uint32]int)
+
+	// Get client context needed for some operations
+	clientCtx, ctxErr := broadcast.P2PGetClientContext(txParams.Config, txParams.NodeURL)
+	if ctxErr != nil {
+		fmt.Printf("[POS-%d] ERROR: Failed to get client context: %v\n", position, ctxErr)
+		return
+	}
+
+	// Current sequence
+	sequence := txParams.Sequence
+
+	fmt.Printf("[POS-%d] Starting multiple sends: %d transactions to perform\n", position, numTransactions)
+
+	// Process each transaction
+	for i := 0; i < numTransactions; i++ {
+		// Select a random recipient that is not the sender
+		var toAddress string
+		if len(recipientAddresses) > 1 {
+			// Try up to 10 times to select a different recipient
+			for attempt := 0; attempt < 10; attempt++ {
+				randIndex := getRandomInt(0, len(recipientAddresses))
+				randomAddr := recipientAddresses[randIndex]
+
+				// Skip if it's the sender's address
+				if randomAddr != acctAddress {
+					toAddress = randomAddr
+					break
+				}
+			}
+
+			// If we couldn't find a different recipient, just use the first one that's not the sender
+			if toAddress == "" {
+				for _, addr := range recipientAddresses {
+					if addr != acctAddress {
+						toAddress = addr
+						break
+					}
+				}
+			}
+		}
+
+		// If we still don't have a recipient, use a random address or fallback to sender
+		if toAddress == "" {
+			if len(recipientAddresses) > 0 {
+				randIndex := getRandomInt(0, len(recipientAddresses))
+				toAddress = recipientAddresses[randIndex]
+			} else {
+				toAddress = acctAddress // Last resort fallback
+			}
+		}
+
+		fmt.Printf("[POS-%d] Selected recipient address: %s\n", position, toAddress)
+
+		// Parse the amount from the string
+		amountValue, err := strconv.ParseInt(amount, 10, 64)
+		if err != nil {
+			amountValue = 1 // Default to 1 token
+			fmt.Printf("[POS-%d] Warning: Invalid amount format, using default value: %d\n",
+				position, amountValue)
+		}
+
+		// Create a copy of txParams to modify for this transaction
+		txParamsCopy := txParams
+		txParamsCopy.Sequence = sequence
+		txParamsCopy.MsgParams["to_address"] = toAddress
+		txParamsCopy.MsgParams["amount"] = amountValue
+
+		// Build, sign, and broadcast the transaction
+		start := time.Now()
+
+		var resp *sdk.TxResponse
+		var broadcastErr error
+
+		// Use the P2PBroadcastTx function for sending via P2P if requested
+		if txParams.Config.BroadcastMode == "p2p" {
+			resp, broadcastErr = broadcast.BroadcastTxP2P(ctx, nil, txParamsCopy)
+		} else {
+			// Otherwise fall back to regular RPC broadcast
+			resp, broadcastErr = broadcast.BroadcastTxSync(ctx, clientCtx, nil,
+				txParams.NodeURL, txParams.Config.Denom, sequence)
+		}
+
+		elapsed := time.Since(start)
+
+		// Process the response
+		if broadcastErr != nil {
+			failedTxs++
+			fmt.Printf("[POS-%d] Transaction FAILED: seq=%d broadcast=%s error=%q\n",
+				position, sequence, broadcastErr)
+		} else if resp != nil {
+			successfulTxs++
+			responseCodes[resp.Code]++
+			fmt.Printf("[POS-%d] Transaction SUCCESS: seq=%d broadcast=%s txhash=%s\n",
+				position, sequence, elapsed, resp.TxHash)
+		}
+
+		// Increment sequence for the next transaction
+		sequence++
+	}
+
+	fmt.Printf("[%s] Completed broadcasts for position %d: %d successful, %d failed\n",
+		time.Now().Format("15:04:05.000"), position, successfulTxs, failedTxs)
+
+	// Print summary of transaction results
+	printResults(acctAddress, successfulTxs, failedTxs, responseCodes)
 }

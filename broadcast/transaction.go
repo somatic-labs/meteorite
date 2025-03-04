@@ -173,11 +173,27 @@ func BuildTransaction(ctx context.Context, txParams *types.TxParams) ([]byte, er
 		return nil, err
 	}
 
+	// Ensure the from_address parameter is present and valid
+	fromAddress, exists := txParams.MsgParams["from_address"].(string)
+	if !exists || fromAddress == "" {
+		return nil, errors.New("from_address is missing or empty in message parameters")
+	}
+
+	// Try to parse the from_address to ensure it's a valid bech32 address
+	_, err := sdk.AccAddressFromBech32(fromAddress)
+	if err != nil {
+		return nil, fmt.Errorf("invalid from_address %s: %w", fromAddress, err)
+	}
+
 	// Get the client context
 	clientCtx, err := P2PGetClientContext(txParams.Config, txParams.NodeURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get client context: %w", err)
 	}
+
+	// Set the from address in the client context
+	fromAddr, _ := sdk.AccAddressFromBech32(fromAddress)
+	clientCtx = clientCtx.WithFromAddress(fromAddr)
 
 	// Create the message based on the message type and parameters
 	msg, err := createMessage(txParams)
@@ -186,7 +202,7 @@ func BuildTransaction(ctx context.Context, txParams *types.TxParams) ([]byte, er
 	}
 
 	// Get account information for the transaction signer
-	fromAddress, _ := txParams.MsgParams["from_address"].(string)
+	fromAddress, _ = txParams.MsgParams["from_address"].(string)
 	accNum, accSeq, err := GetAccountInfo(ctx, clientCtx, fromAddress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get account info: %w", err)
@@ -982,13 +998,21 @@ func ProcessTxBroadcastResult(txResponse *sdk.TxResponse, err error, nodeURL str
 	}
 }
 
-// SendTx is a high-level function that builds, signs, and broadcasts a transaction
 func SendTx(
 	ctx context.Context,
 	txParams types.TransactionParams,
 	sequence uint64,
 	broadcastMode string,
 ) (*sdk.TxResponse, error) {
+	// Ensure from_address is set in message parameters and use it to determine the node
+	fromAddress, exists := txParams.MsgParams["from_address"].(string)
+	if exists && fromAddress != "" && len(txParams.Config.Nodes.RPC) > 0 {
+		// We'll implement custom node selection logic in the registry's prepareTransactionParams
+		// This allows for more control over node selection at the transaction preparation stage
+		fmt.Printf("📝 Transaction for account %s using node %s\n",
+			fromAddress, txParams.NodeURL)
+	}
+
 	// Build and sign the transaction
 	txBytes, err := BuildAndSignTransaction(ctx, txParams, sequence, nil)
 	if err != nil {
