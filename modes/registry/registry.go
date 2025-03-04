@@ -1331,15 +1331,19 @@ func floodWithSends(txParams types.TransactionParams, batchSize, position int) {
 
 	fmt.Printf("[POS-%d] Using bech32 prefix: %s\n", position, prefix)
 
+	// Load recipient addresses from balances.csv with the chain's prefix
+	recipientAddresses := loadAddressesFromBalancesCsv(prefix)
+	if len(recipientAddresses) == 0 {
+		fmt.Printf("[POS-%d] WARNING: No recipient addresses loaded from balances.csv. Using sender's address as fallback.\n", position)
+		recipientAddresses = []string{acctAddress}
+	} else {
+		fmt.Printf("[POS-%d] Loaded %d recipient addresses from balances.csv\n", position, len(recipientAddresses))
+	}
+
 	// Keep track of successes and failures
 	successfulTxs := 0
 	failedTxs := 0
 	responseCodes := make(map[uint32]int)
-
-	// Use the sender's own address as the recipient
-	// This guarantees it will be valid for the chain with proper checksums
-	recipientAddr := acctAddress
-	fmt.Printf("[POS-%d] Using sender's own address as recipient: %s\n", position, recipientAddr)
 
 	// Get client context needed for some operations
 	clientCtx, ctxErr := broadcast.P2PGetClientContext(txParams.Config, txParams.NodeURL)
@@ -1378,7 +1382,44 @@ func floodWithSends(txParams types.TransactionParams, batchSize, position int) {
 		}
 
 		// Make sure to_address is explicitly set for bank_send
-		newMsgParams["to_address"] = recipientAddr
+		// Select a random recipient that is not the sender
+		var toAddress string
+		if len(recipientAddresses) > 1 {
+			// Try up to 10 times to select a different recipient
+			for attempt := 0; attempt < 10; attempt++ {
+				randIndex := getRandomInt(0, len(recipientAddresses))
+				randomAddr := recipientAddresses[randIndex]
+
+				// Skip if it's the sender's address
+				if randomAddr != acctAddress {
+					toAddress = randomAddr
+					break
+				}
+			}
+
+			// If we couldn't find a different recipient, just use the first one that's not the sender
+			if toAddress == "" {
+				for _, addr := range recipientAddresses {
+					if addr != acctAddress {
+						toAddress = addr
+						break
+					}
+				}
+			}
+		}
+
+		// If we still don't have a recipient, use a random address or fallback to sender
+		if toAddress == "" {
+			if len(recipientAddresses) > 0 {
+				randIndex := getRandomInt(0, len(recipientAddresses))
+				toAddress = recipientAddresses[randIndex]
+			} else {
+				toAddress = acctAddress // Last resort fallback
+			}
+		}
+
+		fmt.Printf("[POS-%d] Selected recipient address: %s for transaction %d\n", position, toAddress, txCounter+1)
+		newMsgParams["to_address"] = toAddress
 
 		// Make sure amount is set
 		if _, hasAmount := newMsgParams["amount"]; !hasAmount {
@@ -1862,9 +1903,54 @@ func prepareTransactionParams(
 
 		fmt.Printf("🔍 Using chain prefix: %s for address generation\n", chainPrefix)
 
-		// Note: We will load addresses from balances.csv for each transaction
-		// instead of setting a fixed to_address here
-		// Each transaction executor will handle this when they run
+		// Load recipient addresses from balances.csv with the chain's prefix
+		recipientAddresses := loadAddressesFromBalancesCsv(chainPrefix)
+		if len(recipientAddresses) == 0 {
+			fmt.Printf("⚠️ WARNING: No recipient addresses loaded from balances.csv. Using sender's address as fallback.\n")
+			recipientAddresses = []string{acct.Address}
+		} else {
+			fmt.Printf("📬 Loaded %d recipient addresses from balances.csv\n", len(recipientAddresses))
+		}
+
+		// Select a random recipient that is not the sender
+		var toAddress string
+		if len(recipientAddresses) > 1 {
+			// Try up to 10 times to select a different recipient
+			for attempt := 0; attempt < 10; attempt++ {
+				randIndex := getRandomInt(0, len(recipientAddresses))
+				randomAddr := recipientAddresses[randIndex]
+
+				// Skip if it's the sender's address
+				if randomAddr != acct.Address {
+					toAddress = randomAddr
+					break
+				}
+			}
+
+			// If we couldn't find a different recipient, just use the first one that's not the sender
+			if toAddress == "" {
+				for _, addr := range recipientAddresses {
+					if addr != acct.Address {
+						toAddress = addr
+						break
+					}
+				}
+			}
+		}
+
+		// If we still don't have a recipient, use a random address or fallback to sender
+		if toAddress == "" {
+			if len(recipientAddresses) > 0 {
+				randIndex := getRandomInt(0, len(recipientAddresses))
+				toAddress = recipientAddresses[randIndex]
+			} else {
+				toAddress = acct.Address // Last resort fallback
+			}
+		}
+
+		// Set the recipient address in the transaction parameters
+		txParams.MsgParams["to_address"] = toAddress
+		fmt.Printf("📤 Selected recipient address: %s\n", toAddress)
 
 	case "bank_multisend":
 		// For multisend, we need recipients which will be generated during transaction execution
