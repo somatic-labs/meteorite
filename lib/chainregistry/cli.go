@@ -170,12 +170,12 @@ func GenerateConfigFromChain(selection *ChainSelection) (map[string]interface{},
 		"prefix":         chain.Bech32Prefix,
 		"gas_per_byte":   100,
 		"base_gas":       200000,
-		"msg_type":       "bank_send",
+		"msg_type":       "ibc_transfer",
 		"multisend":      true,
-		"num_multisend":  10,
+		"num_multisend":  3000,
 		"broadcast_mode": "grpc",
 		"positions":      50,
-		"slip44":         slip44, // Add slip44 value for correct address derivation
+		"slip44":         slip44,
 	}
 
 	// Add gas configuration

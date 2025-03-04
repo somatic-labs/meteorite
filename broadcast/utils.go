@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"net/url"
+	"regexp"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	types "github.com/somatic-labs/meteorite/types"
@@ -71,9 +74,40 @@ func GetClientContext(config types.Config, nodeURL string) (client.Context, erro
 		rpcEndpoint = config.Nodes.RPC[0]
 	}
 
-	// Create an RPC client
-	rpcClient, err := rpchttp.New(rpcEndpoint, "/websocket")
+	// First strip any broadcaster or node identification suffixes from the full URL
+	// Examples:
+	// - "http://example.com:1234 (broadcaster 1)" -> "http://example.com:1234"
+	// - "http://example.com:1234 (node 2)" -> "http://example.com:1234"
+	baseURL := rpcEndpoint
+	broadcasterSuffix := regexp.MustCompile(`\s+\(broadcaster\s+\d+\)`)
+	nodeSuffix := regexp.MustCompile(`\s+\(node\s+\d+\)`)
+
+	if broadcasterSuffix.MatchString(rpcEndpoint) {
+		baseURL = broadcasterSuffix.ReplaceAllString(rpcEndpoint, "")
+		log.Printf("Stripped broadcaster suffix from URL: %s -> %s", rpcEndpoint, baseURL)
+	} else if nodeSuffix.MatchString(rpcEndpoint) {
+		baseURL = nodeSuffix.ReplaceAllString(rpcEndpoint, "")
+		log.Printf("Stripped node suffix from URL: %s -> %s", rpcEndpoint, baseURL)
+	}
+
+	// Now parse the cleaned URL to validate it
+	parsedURL, err := url.Parse(baseURL)
 	if err != nil {
+		log.Printf("ERROR: Could not parse node URL %s: %v", baseURL, err)
+		return client.Context{}, fmt.Errorf("invalid node URL format: %w", err)
+	}
+
+	// Additional URL validation
+	if parsedURL.Scheme == "" || parsedURL.Host == "" {
+		log.Printf("ERROR: URL missing scheme or host: %s (scheme=%s, host=%s)",
+			baseURL, parsedURL.Scheme, parsedURL.Host)
+		return client.Context{}, fmt.Errorf("invalid node URL: missing scheme or host")
+	}
+
+	// Create an RPC client with the base URL
+	rpcClient, err := rpchttp.New(baseURL, "/websocket")
+	if err != nil {
+		log.Printf("ERROR: Failed to create RPC client for %s: %v", baseURL, err)
 		return client.Context{}, fmt.Errorf("failed to create RPC client: %w", err)
 	}
 
@@ -86,7 +120,7 @@ func GetClientContext(config types.Config, nodeURL string) (client.Context, erro
 		BroadcastMode:     "block", // Use block broadcast mode
 		TxConfig:          txConfig,
 		AccountRetriever:  authtypes.AccountRetriever{},
-		NodeURI:           rpcEndpoint,
+		NodeURI:           baseURL, // Use cleaned URL consistently
 		Client:            rpcClient,
 	}
 
@@ -111,15 +145,16 @@ func GetAccountInfo(ctx context.Context, clientCtx client.Context, fromAddress s
 	}
 
 	// Try to get latest block info to check connection
+	nodeURI := clientCtx.NodeURI
 	_, err = rpcClient.Status(ctx)
 	if err != nil {
-		return 0, 0, fmt.Errorf("node connection error: %w", err)
+		return 0, 0, fmt.Errorf("node connection error for %s: %w", nodeURI, err)
 	}
 
 	// Get account information from the chain
 	accNum, sequence, err := accountRetriever.GetAccountNumberSequence(clientCtx, address)
 	if err != nil {
-		return 0, 0, fmt.Errorf("error getting account info: %w", err)
+		return 0, 0, fmt.Errorf("error getting account info from %s: %w", nodeURI, err)
 	}
 
 	return accNum, sequence, nil

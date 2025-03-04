@@ -61,9 +61,10 @@ func (m *MultiSendDistributor) GetNextRPC() string {
 	m.rpcIndex = (m.rpcIndex + 1) % len(m.rpcs)
 
 	// If we've gone through all nodes once, consider refreshing the list
-	if m.rpcIndex == 0 {
-		// Refresh endpoints every 30 minutes or if our endpoint list is small
-		if time.Since(m.lastRefreshTime) > 30*time.Minute || len(m.rpcs) < 5 {
+	// We'll check more frequently now to find more non-registry nodes
+	if m.rpcIndex == 0 || m.rpcIndex%10 == 0 {
+		// Refresh endpoints more frequently
+		if time.Since(m.lastRefreshTime) > 10*time.Minute || len(m.rpcs) < 10 {
 			go m.RefreshEndpoints()
 		}
 	}
@@ -78,22 +79,36 @@ func (m *MultiSendDistributor) RefreshEndpoints() {
 
 	fmt.Println("Refreshing RPC endpoints through peer discovery...")
 
-	// Use a reasonable timeout for discovery
-	discoveryTimeout := 30 * time.Second
+	// Use a longer timeout for more thorough discovery
+	discoveryTimeout := 45 * time.Second
 
 	// Discover new peers
-	newEndpoints, err := m.peerDiscovery.DiscoverPeers(discoveryTimeout)
+	_, err := m.peerDiscovery.DiscoverPeers(discoveryTimeout)
 	if err != nil {
 		fmt.Printf("Warning: Failed to discover new peers: %v\n", err)
 		return
 	}
 
-	// If we found new endpoints, update our list
-	if len(newEndpoints) > len(m.rpcs) {
-		fmt.Printf("Updated RPC endpoint list: %d → %d endpoints\n",
-			len(m.rpcs), len(newEndpoints))
-		m.rpcs = newEndpoints
+	// Get the prioritized list (non-registry nodes first)
+	prioritizedEndpoints := m.peerDiscovery.GetPrioritizedEndpoints()
+
+	// If we found any endpoints, update our list
+	if len(prioritizedEndpoints) > 0 {
+		nonRegistryCount := len(m.peerDiscovery.GetNonRegistryNodes())
+		fmt.Printf("Updated RPC endpoint list: %d endpoints (%d non-registry nodes)\n",
+			len(prioritizedEndpoints), nonRegistryCount)
+		m.rpcs = prioritizedEndpoints
 		m.lastRefreshTime = time.Now()
+
+		// Print a few non-registry nodes if we have them
+		if nonRegistryCount > 0 {
+			nonRegistryNodes := m.peerDiscovery.GetNonRegistryNodes()
+			maxDisplay := 5
+			if nonRegistryCount < maxDisplay {
+				maxDisplay = nonRegistryCount
+			}
+			fmt.Printf("Sample non-registry nodes: %v\n", nonRegistryNodes[:maxDisplay])
+		}
 	}
 }
 
@@ -101,13 +116,16 @@ func (m *MultiSendDistributor) RefreshEndpoints() {
 func (m *MultiSendDistributor) GetNextSeed() int64 {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
-
-	seed := m.seedCounter
 	m.seedCounter++
-	return seed
+	return m.seedCounter
 }
 
-// getOrCreateToAddress returns a recipient address or creates a deterministic one from a seed
+// GetPeerDiscovery returns the peer discovery instance
+func (m *MultiSendDistributor) GetPeerDiscovery() *peerdiscovery.PeerDiscovery {
+	return m.peerDiscovery
+}
+
+// Helper function to get or create a recipient address
 func getOrCreateToAddress(specifiedAddress, randomSeed string) (sdk.AccAddress, error) {
 	if specifiedAddress != "" {
 		toAccAddress, err := sdk.AccAddressFromBech32(specifiedAddress)

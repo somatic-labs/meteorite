@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/somatic-labs/meteorite/lib"
 	types "github.com/somatic-labs/meteorite/types"
 
 	sdkmath "cosmossdk.io/math"
@@ -18,9 +21,11 @@ import (
 	sdkclient "github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/tx"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	signing "github.com/cosmos/cosmos-sdk/types/tx/signing"
+	signingtypes "github.com/cosmos/cosmos-sdk/types/tx/signing"
 	xauthsigning "github.com/cosmos/cosmos-sdk/x/auth/signing"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
+	ibctransfertypes "github.com/cosmos/ibc-go/v8/modules/apps/transfer/types"
+	clienttypes "github.com/cosmos/ibc-go/v8/modules/core/02-client/types"
 )
 
 const (
@@ -34,14 +39,58 @@ const (
 	minGasWasmExecute   = 300000
 	minGasDefault       = 100000
 
-	// Error patterns
-	insufficientFeesPattern = "insufficient fees; got: \\d+\\w+ required: (\\d+)\\w+"
+	// Error patterns - expanded to catch more variations
+	insufficientFeesPattern     = "insufficient fees; got: \\d+\\w+ required: (\\d+)\\w+"
+	insufficientFeesAltPattern1 = "got: [^;]+; required: (\\d+)\\w+"
+	insufficientFeesAltPattern2 = "required: (\\d+)\\w+"
+
+	// Sequence error patterns
 	sequenceMismatchPattern = "account sequence mismatch: expected (\\d+), got \\d+"
+	sequenceAltPattern1     = "expected sequence: (\\d+)"
+	sequenceAltPattern2     = "sequence (\\d+) but got \\d+"
+	sequenceAltPattern3     = "expected (\\d+), got \\d+"
+	sequenceAltPattern4     = "sequence \\d+ != (\\d+)"
+
+	// Constants for error message patterns
+	maxErrorQueueSize = 10 // Max number of recent error messages to store
 )
 
 // multiSendDistributor defines the interface for creating MultiSend messages
 type multiSendDistributor interface {
 	CreateDistributedMultiSendMsg(fromAddress string, msgParams types.MsgParams, seed int64) (sdk.Msg, string, error)
+}
+
+// ErrorQueue stores recent error messages for pattern matching
+type ErrorQueue struct {
+	messages []string
+	mutex    sync.RWMutex
+}
+
+// Global instance of the error queue
+var regexErrorQueue = &ErrorQueue{
+	messages: make([]string, 0, maxErrorQueueSize),
+}
+
+// AddError adds an error message to the queue
+func (q *ErrorQueue) AddError(errMsg string) {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	// Add new error message
+	q.messages = append(q.messages, errMsg)
+
+	// Trim queue if necessary
+	if len(q.messages) > maxErrorQueueSize {
+		q.messages = q.messages[len(q.messages)-maxErrorQueueSize:]
+	}
+}
+
+// GetErrorString returns a concatenated string of all recent errors for pattern matching
+func (q *ErrorQueue) GetErrorString() string {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	return strings.Join(q.messages, " ")
 }
 
 // convertMapToMsgParams converts a map of parameters to the MsgParams struct
@@ -77,20 +126,63 @@ func createBankSendMsg(txParams *types.TxParams) (sdk.Msg, error) {
 		return nil, errors.New("from_address is required for bank_send")
 	}
 
-	toAddrStr, ok := txParams.MsgParams["to_address"].(string)
-	if !ok || toAddrStr == "" {
-		return nil, errors.New("to_address is required for bank_send")
-	}
-
-	// Parse addresses
+	// Parse from address
 	fromAddr, err := sdk.AccAddressFromBech32(fromAddrStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid from address: %w", err)
 	}
 
+	// Get to_address from params
+	toAddrStr, ok := txParams.MsgParams["to_address"].(string)
+	if !ok || toAddrStr == "" {
+		// If to_address is not specified, get a random one from balances.csv
+		// First determine the prefix to use - either from config or extract from from_address
+		prefix := "atone" // Default to atone prefix
+		if txParams.Config.AccountPrefix != "" {
+			prefix = txParams.Config.AccountPrefix
+			log.Printf("Using account prefix from config: %s", prefix)
+		} else if txParams.Config.Prefix != "" {
+			prefix = txParams.Config.Prefix
+			log.Printf("Using prefix from config: %s", prefix)
+		} else {
+			// Extract prefix from fromAddrStr
+			parts := strings.Split(fromAddrStr, "1")
+			if len(parts) > 0 && parts[0] != "" {
+				prefix = parts[0]
+				log.Printf("Extracted prefix from from_address: %s", prefix)
+			} else {
+				log.Printf("Could not extract prefix from from_address, using default prefix: %s", prefix)
+			}
+		}
+
+		// Get address manager and try to get a random address
+		addressManager := lib.GetAddressManager()
+
+		// First try to load addresses if needed
+		if err := addressManager.LoadAddressesFromCSV(); err != nil {
+			log.Printf("Warning: Failed to load addresses from balances.csv: %v", err)
+		}
+
+		randomAddr, err := addressManager.GetRandomAddressWithPrefix(prefix)
+		if err != nil {
+			log.Printf("Failed to get random address from balances.csv: %v", err)
+			return nil, fmt.Errorf("to_address is required for bank_send and failed to get random address: %w", err)
+		}
+
+		if randomAddr == "" {
+			log.Printf("Got empty random address from balances.csv")
+			return nil, errors.New("failed to get valid to_address from balances.csv")
+		}
+
+		toAddrStr = randomAddr
+		log.Printf("Using random address from balances.csv with prefix %s: %s", prefix, toAddrStr)
+	}
+
+	// Parse to address
 	toAddr, err := sdk.AccAddressFromBech32(toAddrStr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid to address: %w", err)
+		log.Printf("Error parsing to_address %s: %v", toAddrStr, err)
+		return nil, fmt.Errorf("invalid to address %s: %w", toAddrStr, err)
 	}
 
 	// Extract amount
@@ -123,11 +215,16 @@ func createBankSendMsg(txParams *types.TxParams) (sdk.Msg, error) {
 	coins := sdk.NewCoins(coin)
 
 	// Create bank send message
-	return &banktypes.MsgSend{
+	msg := &banktypes.MsgSend{
 		FromAddress: fromAddr.String(),
 		ToAddress:   toAddr.String(),
 		Amount:      coins,
-	}, nil
+	}
+
+	log.Printf("Created bank send message from %s to %s with amount %d %s",
+		fromAddr.String(), toAddr.String(), amount, denom)
+
+	return msg, nil
 }
 
 // createMultiSendMsg creates a bank multisend message from the provided parameters
@@ -138,8 +235,54 @@ func createMultiSendMsg(txParams *types.TxParams) (sdk.Msg, error) {
 
 // createIbcTransferMsg creates an IBC transfer message
 func createIbcTransferMsg(txParams *types.TxParams) (sdk.Msg, error) {
-	// Just a stub for now
-	return nil, errors.New("ibc_transfer not implemented")
+	// Get necessary parameters from txParams
+	fromAddress, ok := txParams.MsgParams["from_address"].(string)
+	if !ok || fromAddress == "" {
+		return nil, errors.New("from_address not specified")
+	}
+
+	toAddress, ok := txParams.MsgParams["to_address"].(string)
+	if !ok || toAddress == "" {
+		return nil, errors.New("to_address not specified")
+	}
+
+	// Check if amount is specified
+	amount, ok := txParams.MsgParams["amount"].(int64)
+	if !ok || amount <= 0 {
+		return nil, errors.New("invalid amount")
+	}
+
+	// Get denom from config
+	denom := txParams.Config.Denom
+	if denom == "" {
+		return nil, errors.New("denom not specified in config")
+	}
+
+	// Create a coin with the amount and denom
+	coin := sdk.NewCoin(denom, sdkmath.NewInt(amount))
+
+	// Use a default source port and channel if not specified
+	sourcePort := "transfer"
+	sourceChannel := "channel-0" // Default channel
+
+	// Check if channel is specified in the config
+	if txParams.Config.Channel != "" {
+		sourceChannel = txParams.Config.Channel
+	}
+
+	// For IBC transfers, we need to use the IBC Transfer module's MsgTransfer
+	// This uses ibc-go v8 compatible imports
+	transferMsg := &ibctransfertypes.MsgTransfer{
+		SourcePort:       sourcePort,
+		SourceChannel:    sourceChannel,
+		Token:            coin,
+		Sender:           fromAddress,
+		Receiver:         toAddress,
+		TimeoutHeight:    clienttypes.Height{},
+		TimeoutTimestamp: 0, // No timeout
+	}
+
+	return transferMsg, nil
 }
 
 // createStoreCodeMsg creates a store code message for CosmWasm
@@ -189,7 +332,8 @@ func BuildTransaction(ctx context.Context, txParams *types.TxParams) ([]byte, er
 	fromAddress, _ := txParams.MsgParams["from_address"].(string)
 	accNum, accSeq, err := GetAccountInfo(ctx, clientCtx, fromAddress)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get account info: %w", err)
+		return nil, fmt.Errorf("failed to get account info for %s at node %s: %w",
+			fromAddress, txParams.NodeURL, err)
 	}
 
 	// Choose gas limit based on message type, gas settings, and node capabilities
@@ -272,7 +416,7 @@ func BuildTransaction(ctx context.Context, txParams *types.TxParams) ([]byte, er
 	// Create the signature
 	sigV2, err := tx.SignWithPrivKey(
 		ctx,
-		signing.SignMode_SIGN_MODE_DIRECT,
+		signingtypes.SignMode_SIGN_MODE_DIRECT,
 		xauthsigning.SignerData{
 			ChainID:       txParams.ChainID,
 			AccountNumber: accNum,
@@ -597,16 +741,27 @@ func BuildAndSignTransaction(
 	sequence uint64,
 	_ interface{},
 ) ([]byte, error) {
+	startTime := time.Now()
+	log.Printf("=== Building transaction for %s ===", txParams.AcctAddress)
+
 	// First, check if we have more up-to-date sequence info for this node from previous errors
+	// Only use local node sequence tracking, don't coordinate across nodes
 	nodeSettings := getNodeSettings(txParams.NodeURL)
 	nodeSettings.mutex.RLock()
 	if nodeSettings.LastSequence > sequence {
 		// Log that we're using the cached sequence from previous error responses
-		fmt.Printf("Using cached sequence %d instead of provided %d for node %s (from previous tx errors)\n",
+		log.Printf("Using cached sequence %d instead of provided %d for node %s (local tracking only)",
 			nodeSettings.LastSequence, sequence, txParams.NodeURL)
 		sequence = nodeSettings.LastSequence
 	}
 	nodeSettings.mutex.RUnlock()
+
+	// If we have no sequence yet, always start with 1 (not 0) and let the mempool tell us the correct value
+	if sequence == 0 {
+		sequence = 1
+		log.Printf("Starting with sequence 1 for account on node %s (will learn from mempool)",
+			txParams.NodeURL)
+	}
 
 	// We need to ensure the passed-in sequence is used
 	txp := &types.TxParams{
@@ -618,6 +773,20 @@ func BuildAndSignTransaction(
 		MsgParams: txParams.MsgParams,
 	}
 
+	// Log the message parameters for debugging
+	logMsgParams := make(map[string]interface{})
+	for k, v := range txParams.MsgParams {
+		logMsgParams[k] = v
+	}
+	// Don't log sensitive data
+	if _, ok := logMsgParams["private_key"]; ok {
+		logMsgParams["private_key"] = "[REDACTED]"
+	}
+
+	paramsJson, _ := json.Marshal(logMsgParams)
+	log.Printf("Transaction parameters: %s", string(paramsJson))
+	log.Printf("Message type: %s", txParams.MsgType)
+
 	// Pass distributor through MsgParams for multisend operations
 	if txParams.Distributor != nil && txParams.MsgType == "bank_multisend" {
 		if txp.MsgParams == nil {
@@ -626,15 +795,30 @@ func BuildAndSignTransaction(
 		txp.MsgParams["distributor"] = txParams.Distributor
 	}
 
-	// Use ClientContext with correct sequence
-	clientCtx, err := GetClientContext(txParams.Config, txParams.NodeURL)
+	// Use ClientContext with correct sequence - retry up to 3 times on failure
+	var clientCtx sdkclient.Context
+	var err error
+	maxRetries := 3
+
+	for i := 0; i < maxRetries; i++ {
+		clientCtx, err = GetClientContext(txParams.Config, txParams.NodeURL)
+		if err == nil {
+			break
+		}
+		log.Printf("Warning: Failed to get client context on attempt %d: %v", i+1, err)
+		if i < maxRetries-1 {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to get client context: %w", err)
+		return nil, fmt.Errorf("failed to create client context after %d attempts: %w", maxRetries, err)
 	}
 
 	// Build and sign the transaction
 	msg, err := createMessage(txp)
 	if err != nil {
+		log.Printf("Error creating message: %v", err)
 		return nil, fmt.Errorf("failed to create message: %w", err)
 	}
 
@@ -643,142 +827,66 @@ func BuildAndSignTransaction(
 
 	// Set the message and other transaction parameters
 	if err := txBuilder.SetMsgs(msg); err != nil {
+		log.Printf("Error setting messages: %v", err)
 		return nil, fmt.Errorf("failed to set messages: %w", err)
 	}
 
 	// Check if there's a pre-calculated gas amount for multisend transactions
 	var gasLimit uint64
 	if calculatedGas, ok := txp.MsgParams["calculated_gas_amount"].(uint64); ok && calculatedGas > 0 {
-		// Use the pre-calculated gas amount for multisend
 		gasLimit = calculatedGas
-		fmt.Printf("Using pre-calculated gas amount for multisend: %d\n", gasLimit)
 	} else {
-		// Estimate gas through simulation
-		simulatedGas, err := DetermineOptimalGas(ctx, clientCtx, tx.Factory{}, 1.3, msg)
-		if err != nil {
-			// Use default if simulation fails
-			gasLimit = uint64(txParams.Config.BaseGas)
-			fmt.Printf("Gas simulation failed, using default gas: %d\n", gasLimit)
-		} else {
-			gasLimit = simulatedGas
-		}
+		// Default to message type specific gas limit
+		gasLimit = getDefaultGasLimitByMsgType(txp.MsgType)
 	}
 
-	txBuilder.SetGasLimit(gasLimit)
+	// Start with a low initial gas price to let us learn from errors
+	gasPrice := int64(1) // Start very low and let the RPC tell us if we need more
 
-	// Set fee - get the gas price from config
-	gasPrice := txParams.Config.Gas.Low
-
-	// For zero gas price, check if we should use adaptive gas pricing
-	if gasPrice == 0 {
-		gsm := GetGasStrategyManager()
-		caps := gsm.GetNodeCapabilities(txParams.NodeURL)
-		if !caps.AcceptsZeroGas {
-			// Use low non-zero gas price if node doesn't support zero gas
-			gasPrice = 1
-			fmt.Printf("Node %s may not support zero gas, using gas price: %d\n",
-				txParams.NodeURL, gasPrice)
-		}
-	}
-
-	// Calculate initial fee amount
+	// Calculate fee amount based on gas limit and price
 	feeAmount := calculateInitialFee(gasLimit, gasPrice)
 
-	// Important: Check if we have a stored minimum fee for this node and use it if higher
-	nodeSettings.mutex.RLock()
-	if minFee, exists := nodeSettings.MinimumFees[txParams.Config.Denom]; exists {
-		if uint64(feeAmount) < minFee {
-			fmt.Printf("Using node-specific minimum fee %d instead of calculated %d for %s\n",
-				minFee, feeAmount, txParams.NodeURL)
-			feeAmount = int64(minFee)
-		}
-	}
-	nodeSettings.mutex.RUnlock()
-
-	// Apply a more aggressive minimum fee strategy to prevent "insufficient fees" errors
-	// For nodes that have previously returned fee errors, add a buffer
-	baseFeeThreshold := int64(200)
-
-	// For large multisend transactions, ensure the fee is proportionally higher
-	if txParams.MsgType == "bank_multisend" && gasLimit > 100000 {
-		// Much higher minimum fee for large multisends - use gas-based calculation
-		minFee := int64(gasLimit) / 5000 // More aggressive scaling (changed from 10000)
-		if feeAmount < minFee {
-			feeAmount = minFee
-			fmt.Printf("Increasing multisend fee to %d based on gas usage\n", feeAmount)
-		}
-	} else if gasPrice > 0 && feeAmount < baseFeeThreshold {
-		// For regular transactions, use higher minimum fee
-		feeAmount = baseFeeThreshold
-		fmt.Printf("Using minimum fee threshold of %d\n", feeAmount)
+	// Set a very low minimum fee to start with
+	minFeeAmount := int64(1) // Start with minimum possible fee
+	if feeAmount < minFeeAmount {
+		log.Printf("Using minimum initial fee of %d", minFeeAmount)
+		feeAmount = minFeeAmount
 	}
 
-	// Apply additional node-specific fee buffer based on historical errors
-	// This helps prevent fee errors on chains that are sensitive to fee amounts
+	// Apply node-specific fee buffers based on history (these are learned from errors)
+	// This will increase fees automatically if we've learned from previous errors
 	feeAmount = applyNodeFeeBuffer(txParams.NodeURL, txParams.Config.Denom, feeAmount)
 
-	feeCoin := fmt.Sprintf("%d%s", feeAmount, txParams.Config.Denom)
-	fee, err := sdk.ParseCoinsNormalized(feeCoin)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse fee: %w", err)
-	}
+	// Create the fee
+	fee := sdk.NewCoins(sdk.NewCoin(txParams.Config.Denom, sdkmath.NewInt(feeAmount)))
+	log.Printf("Setting gas limit to %d and fee to %d %s", gasLimit, feeAmount, txParams.Config.Denom)
 
-	fmt.Printf("Setting transaction fee: %s (gas limit: %d, gas price: %d) for node %s\n",
-		fee.String(), gasLimit, gasPrice, txParams.NodeURL)
+	txBuilder.SetGasLimit(gasLimit)
 	txBuilder.SetFeeAmount(fee)
 
-	// Set memo if provided
-	txBuilder.SetMemo("")
-
-	// Get account number - this is still needed, but we won't use its sequence
-	accNum := txParams.AccNum
-	fromAddress, _ := txParams.MsgParams["from_address"].(string)
-
-	// We only need account number from GetAccountInfo, NOT the sequence
-	// The sequence we use should be from our tracking system, which considers mempool state
-	fetchedAccNum, stateSequence, err := GetAccountInfo(ctx, clientCtx, fromAddress)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get account info: %w", err)
-	}
-
-	// Use the fetched account number
-	accNum = fetchedAccNum
-
-	// Only log the state sequence for debugging, but don't use it directly
-	// This helps us understand discrepancies between state and our tracked sequences
-	fmt.Printf("Node %s reports state sequence %d, using tracked sequence %d\n",
-		txParams.NodeURL, stateSequence, sequence)
-
-	// If we have no better information (first tx to this node), then use state sequence
-	if sequence == 0 {
-		sequence = stateSequence
-		fmt.Printf("First transaction to node %s, using state sequence: %d\n", txParams.NodeURL, sequence)
-		updateSequence(txParams.NodeURL, sequence)
-	}
-
-	// Set up signature
-	sigV2 := signing.SignatureV2{
-		PubKey:   txParams.PubKey,
-		Sequence: sequence,
-		Data: &signing.SingleSignatureData{
-			SignMode: signing.SignMode_SIGN_MODE_DIRECT,
+	// Prepare an empty signature to get the correct size
+	sigV2 := signingtypes.SignatureV2{
+		PubKey: txParams.PrivKey.PubKey(),
+		Data: &signingtypes.SingleSignatureData{
+			SignMode: signingtypes.SignMode_SIGN_MODE_DIRECT,
 		},
 	}
 
 	if err := txBuilder.SetSignatures(sigV2); err != nil {
+		log.Printf("Error setting signatures: %v", err)
 		return nil, fmt.Errorf("failed to set signatures: %w", err)
 	}
 
 	signerData := xauthsigning.SignerData{
 		ChainID:       txParams.ChainID,
-		AccountNumber: accNum,
+		AccountNumber: txParams.AccNum,
 		Sequence:      sequence,
 	}
 
 	// Sign the transaction with the private key
 	sigV2, err = tx.SignWithPrivKey(
 		ctx,
-		signing.SignMode_SIGN_MODE_DIRECT,
+		signingtypes.SignMode_SIGN_MODE_DIRECT,
 		signerData,
 		txBuilder,
 		txParams.PrivKey,
@@ -786,22 +894,30 @@ func BuildAndSignTransaction(
 		sequence,
 	)
 	if err != nil {
+		log.Printf("Error signing transaction: %v", err)
 		return nil, fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
 	// Set the signed signature
 	if err := txBuilder.SetSignatures(sigV2); err != nil {
+		log.Printf("Error setting final signatures: %v", err)
 		return nil, fmt.Errorf("failed to set signatures: %w", err)
 	}
 
 	// Encode the transaction
 	txBytes, err := clientCtx.TxConfig.TxEncoder()(txBuilder.GetTx())
 	if err != nil {
+		log.Printf("Error encoding transaction: %v", err)
 		return nil, fmt.Errorf("failed to encode transaction: %w", err)
 	}
 
-	// If successful, update our node sequence cache preemptively
+	// Record the time we built this transaction
+	log.Printf("Successfully built transaction for %s with sequence %d and fee %d %s in %v",
+		txParams.AcctAddress, sequence, feeAmount, txParams.Config.Denom, time.Since(startTime))
+
+	// If successful, update only our local node sequence cache preemptively
 	// This helps avoid sequence errors on subsequent transactions to the same node
+	// but doesn't coordinate across nodes to maintain divergent mempools
 	updateSequence(txParams.NodeURL, sequence+1)
 
 	return txBytes, nil
@@ -814,13 +930,13 @@ func applyNodeFeeBuffer(nodeURL, denom string, baseFee int64) int64 {
 	nodeSettings.mutex.RLock()
 	defer nodeSettings.mutex.RUnlock()
 
-	// Default buffer is 10%
-	buffer := 1.1
+	// Default buffer is 5%
+	buffer := 1.05
 
-	// If we've had fee errors from this node before, use a more aggressive buffer
+	// If we've had fee errors from this node before, use a slightly higher buffer
 	if minFee, exists := nodeSettings.MinimumFees[denom]; exists && minFee > 0 {
-		// Apply a 20% buffer over the known minimum
-		buffer = 1.2
+		// Apply a 10% buffer over the known minimum
+		buffer = 1.1
 
 		// Ensure we're at least meeting the known minimum fee (with buffer)
 		minWithBuffer := int64(float64(minFee) * buffer)
@@ -835,79 +951,168 @@ func applyNodeFeeBuffer(nodeURL, denom string, baseFee int64) int64 {
 	return int64(float64(baseFee) * buffer)
 }
 
-// ProcessBroadcastResponse processes the response from a transaction broadcast
-// and updates node-specific settings based on errors
+// ProcessBroadcastResponse processes a broadcast response to extract sequence numbers and fee requirements
 func ProcessBroadcastResponse(nodeURL, denom string, sequence uint64, respBytes []byte) {
-	// Check if there's an error response to parse
+	// If no response bytes, just return
 	if len(respBytes) == 0 {
 		return
 	}
 
-	respStr := string(respBytes)
+	// Get the full error string for pattern matching
+	errorStr := string(respBytes)
 
-	// Check for common error patterns in the response
+	// Track the error message in our regex queue for later analysis
+	regexErrorQueue.AddError(errorStr)
 
-	// 1. Check for sequence mismatch errors
+	// Check for sequence mismatch errors using our helper function
+	if correctSeq := extractSequenceFromError(errorStr); correctSeq > 0 {
+		// Got a specific sequence, update our tracking
+		if correctSeq > sequence {
+			log.Printf("FEE DEBUG: Node %s sequence updated from %d to %d (from error message)",
+				nodeURL, sequence, correctSeq)
+			updateSequence(nodeURL, correctSeq)
+		}
+	}
+
+	// Check for insufficient fee errors
+	if requiredFee := extractFeeFromError(errorStr, denom); requiredFee > 0 {
+		// Apply a small buffer on top of the required fee to ensure success next time
+		minFee := uint64(float64(requiredFee) * 1.1)
+
+		log.Printf("FEE ADJUSTMENT: Required fee is %d%s, setting node minimum to %d%s for future transactions",
+			requiredFee, denom, minFee, denom)
+
+		// Update the minimum fee for this node/denom combination
+		updateMinimumFee(nodeURL, denom, minFee)
+	}
+
+	// Check for out of gas errors
+	if strings.Contains(errorStr, "out of gas") {
+		log.Printf("OUT OF GAS: Transaction at node %s failed - consider increasing gas limits", nodeURL)
+	}
+}
+
+// extractSequenceFromError extracts the sequence number from an error message
+func extractSequenceFromError(errorStr string) uint64 {
+	// Try multiple regex patterns to extract sequence information
+
+	// Primary pattern: "account sequence mismatch: expected X, got Y"
 	sequenceRegex := regexp.MustCompile(sequenceMismatchPattern)
-	if matches := sequenceRegex.FindStringSubmatch(respStr); len(matches) > 1 {
-		correctSeq, _ := strconv.ParseUint(matches[1], 10, 64)
+	matches := sequenceRegex.FindStringSubmatch(errorStr)
 
-		// Update our sequence tracking with the correct mempool sequence
-		updateSequence(nodeURL, correctSeq)
-		fmt.Printf("MEMPOOL SYNC - Updated sequence for %s: %d (was: %d)\n",
-			nodeURL, correctSeq, sequence)
-
-		// Return early since this is a critical error to fix
-		return
+	if len(matches) > 1 {
+		extractedSeq, err := strconv.ParseUint(matches[1], 10, 64)
+		if err == nil {
+			return extractedSeq
+		}
 	}
 
-	// 2. Check for insufficient fees errors
-	insufficientFeesRegex := regexp.MustCompile(insufficientFeesPattern)
-	if matches := insufficientFeesRegex.FindStringSubmatch(respStr); len(matches) > 1 {
-		requiredFee, _ := strconv.ParseUint(matches[1], 10, 64)
-
-		// Add a 20% buffer to the required fee to avoid borderline cases
-		bufferedFee := uint64(float64(requiredFee) * 1.2)
-
-		// Update minimum fee for this node
-		updateMinimumFee(nodeURL, denom, bufferedFee)
-		fmt.Printf("FEE ADJUSTMENT - Node %s requires minimum %d %s, storing %d with buffer\n",
-			nodeURL, requiredFee, denom, bufferedFee)
-
-		return
+	// Try alternative pattern 1
+	altPattern1 := regexp.MustCompile(sequenceAltPattern1)
+	altMatches1 := altPattern1.FindStringSubmatch(errorStr)
+	if len(altMatches1) > 1 {
+		extractedSeq, err := strconv.ParseUint(altMatches1[1], 10, 64)
+		if err == nil {
+			return extractedSeq
+		}
 	}
 
-	// If we got here and there's an "out of gas" error, update gas requirements
-	if strings.Contains(respStr, "out of gas") {
-		// This error handling would update gas strategy, but that's handled elsewhere
-		fmt.Printf("GAS ERROR detected for node %s - Consider increasing gas limits\n", nodeURL)
-		return
+	// Try alternative pattern 2
+	altPattern2 := regexp.MustCompile(sequenceAltPattern2)
+	altMatches2 := altPattern2.FindStringSubmatch(errorStr)
+	if len(altMatches2) > 1 {
+		extractedSeq, err := strconv.ParseUint(altMatches2[1], 10, 64)
+		if err == nil {
+			return extractedSeq
+		}
 	}
 
-	// If no errors found, this was likely a successful transaction
-	// We can simply rely on the preemptive sequence update in BuildAndSignTransaction
+	// Try alternative pattern 3
+	altPattern3 := regexp.MustCompile(sequenceAltPattern3)
+	altMatches3 := altPattern3.FindStringSubmatch(errorStr)
+	if len(altMatches3) > 1 {
+		extractedSeq, err := strconv.ParseUint(altMatches3[1], 10, 64)
+		if err == nil {
+			return extractedSeq
+		}
+	}
+
+	// Try alternative pattern 4
+	altPattern4 := regexp.MustCompile(sequenceAltPattern4)
+	altMatches4 := altPattern4.FindStringSubmatch(errorStr)
+	if len(altMatches4) > 1 {
+		extractedSeq, err := strconv.ParseUint(altMatches4[1], 10, 64)
+		if err == nil {
+			return extractedSeq
+		}
+	}
+
+	// No sequence found
+	return 0
+}
+
+// extractFeeFromError extracts the required fee from an error message
+func extractFeeFromError(errorStr string, denom string) uint64 {
+	// Check for the most common pattern "spendable balance X is smaller than Y"
+	feePattern := regexp.MustCompile(`spendable balance .* is smaller than (\d+)` + denom)
+	matches := feePattern.FindStringSubmatch(errorStr)
+
+	if len(matches) > 1 {
+		requiredFee, err := strconv.ParseUint(matches[1], 10, 64)
+		if err == nil {
+			return requiredFee
+		}
+	}
+
+	// Try the direct "required: X" pattern
+	directPattern := regexp.MustCompile(`required: (\d+)` + denom)
+	directMatches := directPattern.FindStringSubmatch(errorStr)
+
+	if len(directMatches) > 1 {
+		requiredFee, err := strconv.ParseUint(directMatches[1], 10, 64)
+		if err == nil {
+			return requiredFee
+		}
+	}
+
+	// Try the "fee < minimum" pattern
+	minFeePattern := regexp.MustCompile(`fee < minimum \((\d+)` + denom)
+	minFeeMatches := minFeePattern.FindStringSubmatch(errorStr)
+
+	if len(minFeeMatches) > 1 {
+		requiredFee, err := strconv.ParseUint(minFeeMatches[1], 10, 64)
+		if err == nil {
+			return requiredFee
+		}
+	}
+
+	// No fee found
+	return 0
 }
 
 // BroadcastTxSync is a wrapper around the standard broadcast that includes error processing
 func BroadcastTxSync(ctx context.Context, clientCtx sdkclient.Context, txBytes []byte, nodeURL, denom string, sequence uint64) (*sdk.TxResponse, error) {
+	// For older versions of Cosmos SDK, BroadcastTxSync is available directly
+	// For newer versions we use BroadcastTx with appropriate mode
 	resp, err := clientCtx.BroadcastTxSync(txBytes)
 
 	// Process broadcast response for errors to update our node-specific tracking
-	// We do this regardless of whether the broadcast itself returned an error
 	if resp != nil {
-		// Marshal response to bytes for processing
 		respBytes, _ := json.Marshal(resp)
 		ProcessBroadcastResponse(nodeURL, denom, sequence, respBytes)
 	} else if err != nil {
-		// If we have an error but no response, process the error string
+		// Add error to the queue for pattern matching
+		regexErrorQueue.AddError(err.Error())
 		ProcessBroadcastResponse(nodeURL, denom, sequence, []byte(err.Error()))
 	}
 
 	return resp, err
 }
 
-// BroadcastTxAsync is a wrapper around the standard broadcast that includes error processing
+// BroadcastTxAsync is a wrapper around async broadcast that includes error processing
 func BroadcastTxAsync(ctx context.Context, clientCtx sdkclient.Context, txBytes []byte, nodeURL, denom string, sequence uint64) (*sdk.TxResponse, error) {
+	// In newer versions of the SDK, BroadcastTxAsync is not directly available on clientCtx
+	// Instead, we use the general BroadcastTx method with the appropriate mode
 	resp, err := clientCtx.BroadcastTxAsync(txBytes)
 
 	// Process broadcast response for errors to update our node-specific tracking
@@ -915,6 +1120,8 @@ func BroadcastTxAsync(ctx context.Context, clientCtx sdkclient.Context, txBytes 
 		respBytes, _ := json.Marshal(resp)
 		ProcessBroadcastResponse(nodeURL, denom, sequence, respBytes)
 	} else if err != nil {
+		// Add error to the queue for pattern matching
+		regexErrorQueue.AddError(err.Error())
 		ProcessBroadcastResponse(nodeURL, denom, sequence, []byte(err.Error()))
 	}
 
@@ -932,6 +1139,8 @@ func BroadcastTxBlock(ctx context.Context, clientCtx sdkclient.Context, txBytes 
 		respBytes, _ := json.Marshal(resp)
 		ProcessBroadcastResponse(nodeURL, denom, sequence, respBytes)
 	} else if err != nil {
+		// Add error to the queue for pattern matching
+		regexErrorQueue.AddError(err.Error())
 		ProcessBroadcastResponse(nodeURL, denom, sequence, []byte(err.Error()))
 	}
 
@@ -970,69 +1179,472 @@ func BroadcastTx(
 	return resp, err
 }
 
-// ProcessTxBroadcastResult processes a transaction broadcast result and returns a custom response
+// ProcessTxBroadcastResult processes a transaction broadcast result and updates node metrics
 func ProcessTxBroadcastResult(txResponse *sdk.TxResponse, err error, nodeURL string, sequence uint64) {
-	// Check if we have a response code indicating error
-	if txResponse != nil && txResponse.Code != 0 {
-		// Process the error log to update our node tracking
-		if txResponse.RawLog != "" {
-			// Handle specific error cases
-			ProcessBroadcastResponse(nodeURL, "", sequence, []byte(txResponse.RawLog))
+	// Calculate approximate latency based on time since the transaction was added to the mempool
+	latency := time.Since(time.Now().Add(-1 * time.Second)) // Approximate 1s for processing
+	success := err == nil && (txResponse == nil || txResponse.Code == 0)
+
+	// Update node performance metrics
+	UpdateNodePerformance(nodeURL, success, latency)
+
+	// Log performance data for debugging
+	perf := GetOrCreateNodePerformance(nodeURL)
+	perf.mutex.RLock()
+	successRate := 0.0
+	if perf.SuccessCount+perf.FailureCount > 0 {
+		successRate = float64(perf.SuccessCount) * 100 / float64(perf.SuccessCount+perf.FailureCount)
+	}
+	perf.mutex.RUnlock()
+
+	if success {
+		log.Printf("TX SUCCESS on node %s (success rate: %.1f%%, avg latency: %v)",
+			nodeURL, successRate, perf.AverageLatency)
+	} else {
+		// Process error response for sequence and fee information
+		if txResponse != nil && txResponse.Code != 0 {
+			if txResponse.RawLog != "" {
+				// Handle specific error cases - this updates our local tracking
+				ProcessBroadcastResponse(nodeURL, "", sequence, []byte(txResponse.RawLog))
+
+				// Log error details for debugging
+				log.Printf("TX FAILED on node %s: code=%d, log=%s (success rate: %.1f%%)",
+					nodeURL, txResponse.Code, truncateErrorString(txResponse.RawLog, 100), successRate)
+			}
+		} else if err != nil {
+			// Add error to queue for pattern matching
+			regexErrorQueue.AddError(err.Error())
+			ProcessBroadcastResponse(nodeURL, "", sequence, []byte(err.Error()))
+
+			// Log error details for debugging
+			log.Printf("TX ERROR on node %s: %s (success rate: %.1f%%)",
+				nodeURL, truncateErrorString(err.Error(), 100), successRate)
 		}
 	}
 }
 
-// SendTx is a high-level function that builds, signs, and broadcasts a transaction
+// SendTx builds, signs, and broadcasts a transaction
 func SendTx(
 	ctx context.Context,
 	txParams types.TransactionParams,
 	sequence uint64,
 	broadcastMode string,
 ) (*sdk.TxResponse, error) {
-	// Build and sign the transaction
-	txBytes, err := BuildAndSignTransaction(ctx, txParams, sequence, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build and sign transaction: %w", err)
+	startTime := time.Now()
+
+	// Check if this account has an assigned node
+	if txParams.AcctAddress != "" {
+		if assignedNode, hasAssignment := GetNodeForAccount(txParams.AcctAddress); hasAssignment {
+			// Use the assigned node for this account
+			log.Printf("Using assigned node %s for account %s", assignedNode, txParams.AcctAddress)
+			txParams.NodeURL = assignedNode
+
+			// Get sequence from node manager if available, but only for this specific node
+			// Don't try to coordinate sequences across nodes to maintain divergent mempools
+			if cachedSeq, hasSequence := GetAccountSequence(txParams.AcctAddress); hasSequence && cachedSeq > sequence {
+				log.Printf("Using cached sequence %d instead of %d for account %s on node %s (node-specific)",
+					cachedSeq, sequence, txParams.AcctAddress, assignedNode)
+				sequence = cachedSeq
+			}
+		} else if len(txParams.Config.Nodes.RPC) > 0 {
+			// No assignment yet, pick the best performing node based on metrics
+			healthyNodes := GetHealthyNodesOnly(txParams.Config.Nodes.RPC)
+			if len(healthyNodes) > 0 {
+				// Find the node with highest success rate and lowest latency
+				bestNode := healthyNodes[0]
+				bestScore := 0.0
+
+				for _, node := range healthyNodes {
+					perf := GetOrCreateNodePerformance(node)
+					perf.mutex.RLock()
+
+					// Calculate score based on success rate and latency
+					total := perf.SuccessCount + perf.FailureCount
+					score := 1.0 // Default score
+
+					if total > 0 {
+						successRate := float64(perf.SuccessCount) / float64(total)
+						// Latency factor - lower is better
+						latencyFactor := 1.0
+						if perf.AverageLatency > 0 {
+							latencyFactor = 1.0 / float64(perf.AverageLatency.Milliseconds()+1)
+						}
+						// Combined score
+						score = successRate*0.7 + latencyFactor*0.3
+					}
+
+					perf.mutex.RUnlock()
+
+					if score > bestScore {
+						bestScore = score
+						bestNode = node
+					}
+				}
+
+				txParams.NodeURL = bestNode
+				AssignNodeToAccount(txParams.AcctAddress, bestNode)
+				log.Printf("Assigned best performing node %s to account %s (score: %.2f)",
+					bestNode, txParams.AcctAddress, bestScore)
+			}
+		}
 	}
 
-	// Get client context for broadcast
+	// Set a timeout for the entire transaction process
+	timeoutCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	// Try to build and sign the transaction, with retries
+	var txBytes []byte
+	var err error
+	maxBuildRetries := 2 // Limit retries to prevent infinite loops
+
+	for retry := 0; retry <= maxBuildRetries; retry++ {
+		txBytes, err = BuildAndSignTransaction(timeoutCtx, txParams, sequence, nil)
+		if err == nil {
+			break // Success, exit the retry loop
+		}
+
+		// If build fails, log and retry with a delay unless we've exhausted retries
+		if retry < maxBuildRetries {
+			log.Printf("WARNING: Failed to build transaction on attempt %d: %v. Retrying...",
+				retry+1, err)
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to build and sign transaction after %d attempts: %w",
+			maxBuildRetries+1, err)
+	}
+
+	// Set up client context for broadcasting
 	clientCtx, err := GetClientContext(txParams.Config, txParams.NodeURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get client context: %w", err)
 	}
 
-	// Broadcast using our wrapper functions to ensure sequence & fee tracking
-	resp, err := BroadcastTx(ctx, clientCtx, txBytes, txParams, sequence, broadcastMode)
+	// Broadcast the transaction
+	var resp *sdk.TxResponse
+	resp, err = BroadcastTx(timeoutCtx, clientCtx, txBytes, txParams, sequence, broadcastMode)
+
+	// Calculate transaction latency
+	txLatency := time.Since(startTime)
+
+	// Check for sequence mismatch error and retry if needed
 	if err != nil {
-		// Check if it's a sequence or fee error that we can recover from
-		if strings.Contains(err.Error(), "account sequence mismatch") ||
-			strings.Contains(err.Error(), "insufficient fees") {
-			// Log retry attempt
-			fmt.Printf("Retrying transaction due to recoverable error: %v\n", err)
+		errorStr := err.Error()
+		if strings.Contains(errorStr, "account sequence mismatch") ||
+			strings.Contains(errorStr, "incorrect account sequence") {
 
-			// Get updated sequence from error if possible
-			// This is a fallback - our ProcessBroadcastResponse should already have updated the sequence
-			correctSeq := sequence
-			seqRegex := regexp.MustCompile(sequenceMismatchPattern)
-			if matches := seqRegex.FindStringSubmatch(err.Error()); len(matches) > 1 {
-				correctSeq, _ = strconv.ParseUint(matches[1], 10, 64)
-			} else {
-				// If we couldn't extract sequence from error, use our cached sequence
-				nodeSettings := getNodeSettings(txParams.NodeURL)
-				nodeSettings.mutex.RLock()
-				if nodeSettings.LastSequence > sequence {
-					correctSeq = nodeSettings.LastSequence
-				}
-				nodeSettings.mutex.RUnlock()
-			}
+			log.Printf("Sequence mismatch detected for node %s, retrying with corrected sequence...",
+				txParams.NodeURL)
 
-			// Try one more time with corrected sequence
-			return SendTx(ctx, txParams, correctSeq, broadcastMode)
+			// Add the error to our queue if not already added in BroadcastTx
+			regexErrorQueue.AddError(errorStr)
+
+			// Use a backoff delay before retrying to give the node's mempool a chance to process
+			time.Sleep(100 * time.Millisecond)
+
+			return retryWithCorrectedSequence(timeoutCtx, clientCtx, txBytes, txParams, sequence, broadcastMode)
 		}
 
-		// Not a recoverable error, return it
-		return resp, err
+		// For other types of errors, log but don't retry to avoid cascading failures
+		log.Printf("Transaction error on node %s (not retrying): %v", txParams.NodeURL, err)
 	}
 
-	return resp, nil
+	// Process the broadcast result for tracking
+	ProcessTxBroadcastResult(resp, err, txParams.NodeURL, sequence)
+
+	// Update sequence in node manager if successful, but only for this node
+	if resp != nil && resp.Code == 0 && txParams.AcctAddress != "" {
+		// We only update the sequence for this specific node to maintain divergent mempools
+		UpdateAccountSequence(txParams.AcctAddress, sequence+1)
+		log.Printf("Updated sequence for %s to %d in node-specific cache for %s (latency: %v)",
+			txParams.AcctAddress, sequence+1, txParams.NodeURL, txLatency)
+	}
+
+	return resp, err
+}
+
+// retryWithCorrectedSequence retries a transaction with a corrected sequence number
+func retryWithCorrectedSequence(
+	ctx context.Context,
+	clientCtx sdkclient.Context,
+	txBytes []byte,
+	txParams types.TransactionParams,
+	sequence uint64,
+	broadcastMode string,
+) (*sdk.TxResponse, error) {
+	// Get all recent error messages to search for sequence information
+	errorStr := regexErrorQueue.GetErrorString()
+	log.Printf("RETRY DEBUG: Analyzing error queue for sequence and fee issues on node %s",
+		txParams.NodeURL)
+
+	// Extract sequence using our helper function
+	correctSeq := extractSequenceFromError(errorStr)
+
+	// If no sequence found, increment by 1 (but never decrement)
+	if correctSeq == 0 || correctSeq < sequence {
+		// Fallback: increment sequence by 1
+		correctSeq = sequence + 1
+		log.Printf("SEQUENCE FALLBACK: No valid sequence extracted, using sequence+1: %d", correctSeq)
+	} else {
+		log.Printf("SEQUENCE MATCH: Extracted sequence %d from mempool error (was: %d)",
+			correctSeq, sequence)
+	}
+
+	// Update our tracking with this corrected sequence
+	updateSequence(txParams.NodeURL, correctSeq)
+
+	// Check if we also need to adjust fees
+	requiredFee := extractFeeFromError(errorStr, txParams.Config.Denom)
+	if requiredFee > 0 {
+		// Log the fee adjustment
+		log.Printf("FEE ADJUSTMENT: Required fee is %d%s, will use in retry",
+			requiredFee, txParams.Config.Denom)
+
+		// Add a 10% buffer to ensure success
+		adjustedFee := uint64(float64(requiredFee) * 1.1)
+		updateMinimumFee(txParams.NodeURL, txParams.Config.Denom, adjustedFee)
+	}
+
+	// Log retry information
+	log.Printf("RETRY TX: Node %s requires sequence %d (was: %d)",
+		txParams.NodeURL, correctSeq, sequence)
+
+	// Add a small delay before retrying to give the node a chance to process
+	time.Sleep(200 * time.Millisecond)
+
+	// Broadcast using the corrected sequence, but don't reuse the same txBytes
+	// We need to build a new transaction with the correct sequence and possibly updated fee
+	return SendTx(ctx, txParams, correctSeq, broadcastMode)
+}
+
+// truncateErrorString truncates a long error string for logging
+func truncateErrorString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+// Simple node assignment system
+var (
+	nodeAssignments      = make(map[string]string) // address -> nodeURL
+	nodeSequences        = make(map[string]uint64) // address -> sequence
+	nodeAssignmentsMutex sync.RWMutex
+
+	// Node performance tracking
+	nodePerformance      = make(map[string]*NodePerformance) // nodeURL -> performance stats
+	nodePerformanceMutex sync.RWMutex
+)
+
+// NodePerformance tracks performance statistics for a node
+type NodePerformance struct {
+	SuccessCount    int
+	FailureCount    int
+	AverageLatency  time.Duration
+	LastSuccessTime time.Time
+	IsHealthy       bool
+	mutex           sync.RWMutex
+}
+
+// GetOrCreateNodePerformance gets or creates a node performance tracker
+func GetOrCreateNodePerformance(nodeURL string) *NodePerformance {
+	nodePerformanceMutex.Lock()
+	defer nodePerformanceMutex.Unlock()
+
+	if perf, exists := nodePerformance[nodeURL]; exists {
+		return perf
+	}
+
+	perf := &NodePerformance{
+		IsHealthy: true, // Assume healthy until proven otherwise
+	}
+	nodePerformance[nodeURL] = perf
+	return perf
+}
+
+// UpdateNodePerformance updates performance metrics for a node
+func UpdateNodePerformance(nodeURL string, success bool, latency time.Duration) {
+	perf := GetOrCreateNodePerformance(nodeURL)
+	perf.mutex.Lock()
+	defer perf.mutex.Unlock()
+
+	if success {
+		perf.SuccessCount++
+		perf.LastSuccessTime = time.Now()
+
+		// Update average latency
+		if perf.AverageLatency == 0 {
+			perf.AverageLatency = latency
+		} else {
+			perf.AverageLatency = (perf.AverageLatency*9 + latency) / 10 // 90% old + 10% new
+		}
+	} else {
+		perf.FailureCount++
+
+		// Mark node as unhealthy if it hasn't had a success in over 30 seconds
+		if time.Since(perf.LastSuccessTime) > 30*time.Second && perf.LastSuccessTime.Unix() > 0 {
+			perf.IsHealthy = false
+		}
+	}
+}
+
+// GetHealthyNodesOnly returns a list of currently healthy nodes
+func GetHealthyNodesOnly(nodes []string) []string {
+	if len(nodes) <= 1 {
+		return nodes // If only one node, return it regardless of health
+	}
+
+	nodePerformanceMutex.RLock()
+	defer nodePerformanceMutex.RUnlock()
+
+	healthyNodes := make([]string, 0, len(nodes))
+	for _, nodeURL := range nodes {
+		if perf, exists := nodePerformance[nodeURL]; exists {
+			perf.mutex.RLock()
+			if perf.IsHealthy {
+				healthyNodes = append(healthyNodes, nodeURL)
+			}
+			perf.mutex.RUnlock()
+		} else {
+			// If no performance data, assume node is healthy
+			healthyNodes = append(healthyNodes, nodeURL)
+		}
+	}
+
+	// If all nodes are unhealthy, return all nodes (better than nothing)
+	if len(healthyNodes) == 0 {
+		return nodes
+	}
+
+	return healthyNodes
+}
+
+// AssignNodesToAccounts distributes accounts across nodes in a load-balanced way
+// Returns a map of address -> nodeURL
+func AssignNodesToAccounts(addresses []string, nodes []string) map[string]string {
+	if len(nodes) == 0 || len(addresses) == 0 {
+		return map[string]string{}
+	}
+
+	// Get only healthy nodes if possible
+	healthyNodes := GetHealthyNodesOnly(nodes)
+	if len(healthyNodes) == 0 {
+		healthyNodes = nodes // Fall back to all nodes if none are healthy
+	}
+
+	nodePerformanceMutex.RLock()
+	// Sort nodes by performance (success rate and latency)
+	// This will prioritize nodes with better performance
+	type nodeWithScore struct {
+		url   string
+		score float64
+	}
+
+	scoredNodes := make([]nodeWithScore, 0, len(healthyNodes))
+	for _, nodeURL := range healthyNodes {
+		var score float64 = 1.0 // Default score
+
+		if perf, exists := nodePerformance[nodeURL]; exists {
+			perf.mutex.RLock()
+			// Calculate score based on success rate and latency
+			total := perf.SuccessCount + perf.FailureCount
+			if total > 0 {
+				successRate := float64(perf.SuccessCount) / float64(total)
+				// Latency factor - lower is better
+				latencyFactor := 1.0
+				if perf.AverageLatency > 0 {
+					latencyFactor = 1.0 / float64(perf.AverageLatency.Milliseconds()+1)
+				}
+				// Combined score
+				score = successRate*0.7 + latencyFactor*0.3
+			}
+			perf.mutex.RUnlock()
+		}
+
+		scoredNodes = append(scoredNodes, nodeWithScore{nodeURL, score})
+	}
+	nodePerformanceMutex.RUnlock()
+
+	// Sort by score in descending order (better nodes first)
+	sort.Slice(scoredNodes, func(i, j int) bool {
+		return scoredNodes[i].score > scoredNodes[j].score
+	})
+
+	// Extract just the URLs in priority order
+	prioritizedNodes := make([]string, len(scoredNodes))
+	for i, n := range scoredNodes {
+		prioritizedNodes[i] = n.url
+	}
+
+	// Distribute accounts across nodes
+	assignments := make(map[string]string, len(addresses))
+	nodeAssignmentsMutex.Lock()
+	defer nodeAssignmentsMutex.Unlock()
+
+	// First, try to maintain existing assignments if the node is still in the list
+	for _, address := range addresses {
+		if currentNode, exists := nodeAssignments[address]; exists {
+			// Check if the current node is in our prioritized list
+			for _, node := range prioritizedNodes {
+				if node == currentNode {
+					// Maintain the current assignment
+					assignments[address] = currentNode
+					nodeAssignments[address] = currentNode
+					break
+				}
+			}
+		}
+	}
+
+	// Then assign remaining accounts evenly across nodes, prioritizing better nodes
+	unassignedAddresses := make([]string, 0)
+	for _, address := range addresses {
+		if _, exists := assignments[address]; !exists {
+			unassignedAddresses = append(unassignedAddresses, address)
+		}
+	}
+
+	for i, address := range unassignedAddresses {
+		nodeIndex := i % len(prioritizedNodes)
+		nodeURL := prioritizedNodes[nodeIndex]
+		assignments[address] = nodeURL
+		nodeAssignments[address] = nodeURL
+		log.Printf("Assigned node %s to account %s", nodeURL, address)
+	}
+
+	return assignments
+}
+
+// AssignNodeToAccount assigns a node to an account
+func AssignNodeToAccount(address, nodeURL string) {
+	nodeAssignmentsMutex.Lock()
+	defer nodeAssignmentsMutex.Unlock()
+	nodeAssignments[address] = nodeURL
+	log.Printf("Assigned node %s to account %s", nodeURL, address)
+}
+
+// GetNodeForAccount returns the assigned node for an account
+func GetNodeForAccount(address string) (string, bool) {
+	nodeAssignmentsMutex.RLock()
+	defer nodeAssignmentsMutex.RUnlock()
+	node, exists := nodeAssignments[address]
+	return node, exists
+}
+
+// UpdateAccountSequence updates the sequence for an account
+func UpdateAccountSequence(address string, sequence uint64) {
+	nodeAssignmentsMutex.Lock()
+	defer nodeAssignmentsMutex.Unlock()
+	nodeSequences[address] = sequence
+}
+
+// GetAccountSequence gets the sequence for an account
+func GetAccountSequence(address string) (uint64, bool) {
+	nodeAssignmentsMutex.RLock()
+	defer nodeAssignmentsMutex.RUnlock()
+	sequence, exists := nodeSequences[address]
+	return sequence, exists
 }

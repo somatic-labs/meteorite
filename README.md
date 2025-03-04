@@ -91,6 +91,25 @@ For advanced users who want more control, you can use a configuration file:
 meteorite -config -f your_config.toml
 ```
 
+### Configuration Options
+
+Meteorite supports several configuration options:
+
+- `balance_funds`: Boolean flag that controls whether funds should be automatically balanced between accounts. Default is `false`.
+  ```toml
+  balance_funds = true  # Enable automatic fund balancing
+  ```
+
+- `multisend`: Boolean flag to enable MultiSend transactions (sends to multiple recipients in one transaction). Default is `true`.
+  ```toml
+  multisend = true  # Enable MultiSend mode
+  ```
+
+- `num_multisend`: Number of recipients in each MultiSend transaction. Default is `3000`.
+  ```toml
+  num_multisend = 3000  # Send to 3000 recipients per transaction
+  ```
+
 ### Requirements
 
 - Create a file named `seedphrase` containing your seed phrase in the directory where you run meteorite
