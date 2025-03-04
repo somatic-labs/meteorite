@@ -106,45 +106,40 @@ func (g *GasStrategyManager) RecordTransactionResult(nodeURL string, success boo
 	}
 
 	if success {
-		caps.SuccessfulTxCount++
-
-		// Update gas usage statistics for this message type
-		stats.SuccessCount++
-		stats.TotalGasUsed += gasUsed
-		stats.AverageGasUsed = stats.TotalGasUsed / stats.SuccessCount
-
-		// Update min/max gas used
-		if gasUsed < stats.MinGasUsed {
-			stats.MinGasUsed = gasUsed
-		}
-		if gasUsed > stats.MaxGasUsed {
-			stats.MaxGasUsed = gasUsed
-		}
-
-		// Store recent gas values for better averaging (keep last 10)
-		if len(stats.RecentGasValues) >= 10 {
-			stats.RecentGasValues = stats.RecentGasValues[1:] // Remove oldest
-		}
-		stats.RecentGasValues = append(stats.RecentGasValues, gasUsed)
-
-		// If successful with lower gas than we thought was required for this node,
-		// update our minimum gas estimate
-		if gasUsed < caps.MinAcceptableGas || caps.MinAcceptableGas == 0 {
-			caps.MinAcceptableGas = gasUsed
-		}
-
-		// If a zero-gas transaction was successful, mark this node as accepting zero gas
-		if gasUsed == 0 {
-			caps.AcceptsZeroGas = true
-			fmt.Printf("Node %s accepts zero-gas transactions! Optimizing future transactions.\n", nodeURL)
-		}
+		updateStatsForSuccess(caps, stats, gasUsed)
 	} else {
-		caps.FailedTxCount++
+		// Track failures
 		stats.FailedCount++
+		caps.FailedTxCount++
 	}
 
 	caps.LastChecked = time.Now()
 	g.nodeCapabilities[nodeURL] = caps
+}
+
+// updateStatsForSuccess updates usage statistics for a successful transaction
+func updateStatsForSuccess(caps *NodeGasCapabilities, stats *GasUsageStats, gasUsed int64) {
+	caps.SuccessfulTxCount++
+
+	// Update gas usage statistics for this message type
+	stats.SuccessCount++
+	stats.TotalGasUsed += gasUsed
+	stats.AverageGasUsed = stats.TotalGasUsed / stats.SuccessCount
+
+	// Update min/max gas used
+	if gasUsed < stats.MinGasUsed {
+		stats.MinGasUsed = gasUsed
+	}
+	if gasUsed > stats.MaxGasUsed {
+		stats.MaxGasUsed = gasUsed
+	}
+
+	// Keep track of recent gas values for better estimation
+	stats.RecentGasValues = append(stats.RecentGasValues, gasUsed)
+	// Trim if we have too many values
+	if len(stats.RecentGasValues) > 10 {
+		stats.RecentGasValues = stats.RecentGasValues[1:] // Remove oldest
+	}
 }
 
 // GetAverageGasForMsgType returns the average gas used for a specific message type

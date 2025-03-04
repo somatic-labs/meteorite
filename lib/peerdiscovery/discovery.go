@@ -327,43 +327,27 @@ func normalizeEndpoint(endpoint string) string {
 
 	// Check for IPv6 addresses which are enclosed in brackets
 	if strings.HasPrefix(address, "[") {
-		// IPv6 address format: [address]:port
-		ipv6Parts := strings.Split(address, "]:")
-		if len(ipv6Parts) != 2 {
-			return "" // Invalid IPv6 format
-		}
+		return handleIPv6Address(address)
+	}
 
-		// Validate IPv6 address (remove leading '[')
-		ipv6Addr := strings.TrimPrefix(ipv6Parts[0], "[")
-		if net.ParseIP(ipv6Addr) == nil {
-			return "" // Invalid IPv6 address
-		}
+	// Process IPv4 address or hostname
+	ipv4Parts := strings.Split(address, ":")
 
-		// Validate port
-		port := ipv6Parts[1]
-		if portNum, err := strconv.Atoi(port); err != nil || portNum <= 0 || portNum > 65535 {
-			return "" // Invalid port
-		}
-	} else {
-		// IPv4 or hostname format: host:port
-		ipv4Parts := strings.Split(address, ":")
+	// Skip addresses without port or with multiple colons (which could be IPv6 without brackets)
+	if len(ipv4Parts) != 2 {
+		return "" // Invalid format
+	}
 
-		// Skip addresses without port or with multiple colons (which could be IPv6 without brackets)
-		if len(ipv4Parts) != 2 {
-			return "" // Invalid format
-		}
+	// Validate hostname or IPv4
+	host := ipv4Parts[0]
+	if net.ParseIP(host) == nil && !isValidHostname(host) {
+		return "" // Invalid host
+	}
 
-		// Validate hostname or IPv4
-		host := ipv4Parts[0]
-		if net.ParseIP(host) == nil && !isValidHostname(host) {
-			return "" // Invalid host
-		}
-
-		// Validate port
-		port := ipv4Parts[1]
-		if portNum, err := strconv.Atoi(port); err != nil || portNum <= 0 || portNum > 65535 {
-			return "" // Invalid port
-		}
+	// Validate port
+	port := ipv4Parts[1]
+	if portNum, err := strconv.Atoi(port); err != nil || portNum <= 0 || portNum > 65535 {
+		return "" // Invalid port
 	}
 
 	// Rebuild the endpoint with protocol
@@ -373,6 +357,33 @@ func normalizeEndpoint(endpoint string) string {
 	endpoint = strings.TrimRight(endpoint, "/")
 
 	return endpoint
+}
+
+// handleIPv6Address processes an IPv6 address and validates it
+func handleIPv6Address(address string) string {
+	// IPv6 address format: [address]:port
+	ipv6Parts := strings.Split(address, "]:")
+	if len(ipv6Parts) != 2 {
+		return "" // Invalid IPv6 format
+	}
+
+	// Validate IPv6 address (remove leading '[')
+	ipv6Addr := strings.TrimPrefix(ipv6Parts[0], "[")
+	if net.ParseIP(ipv6Addr) == nil {
+		return "" // Invalid IPv6 address
+	}
+
+	// For IPv6, we need to use http://[ipv6]:port format for HTTP URLs
+	port := ipv6Parts[1]
+	if port == "" {
+		return "" // Missing port
+	}
+
+	if _, err := strconv.Atoi(port); err != nil {
+		return "" // Invalid port number
+	}
+
+	return fmt.Sprintf("http://[%s]:%s", ipv6Addr, port)
 }
 
 // isPrivateIP checks if an IP address is private

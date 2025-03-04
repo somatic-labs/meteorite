@@ -22,7 +22,7 @@ func SendTransactionViaRPC(
 	encodingConfig.Codec = cdc
 
 	// Create a context with 120 seconds timeout to avoid context deadline exceeded
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	timeoutCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	// Log sequence use for debugging
@@ -38,7 +38,7 @@ func SendTransactionViaRPC(
 		txParams.Sequence = sequence
 
 		// Build and sign the transaction
-		txBytes, err := BuildAndSignTransaction(ctx, txParams, sequence, encodingConfig)
+		txBytes, err := BuildAndSignTransaction(timeoutCtx, txParams, sequence, encodingConfig)
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to build transaction: %w", err)
 		}
