@@ -589,13 +589,24 @@ func calculateInitialFee(gasLimit uint64, gasPrice int64) int64 {
 	return feeAmount
 }
 
-// Modify BuildAndSignTransaction to handle errors and retry
+// Modify BuildAndSignTransaction to properly use node-specific settings
 func BuildAndSignTransaction(
 	ctx context.Context,
 	txParams types.TransactionParams,
 	sequence uint64,
 	_ interface{},
 ) ([]byte, error) {
+	// First, check if we have more up-to-date sequence info for this node
+	nodeSettings := getNodeSettings(txParams.NodeURL)
+	nodeSettings.mutex.RLock()
+	if nodeSettings.LastSequence > sequence {
+		// Log that we're using the cached sequence instead of the provided one
+		fmt.Printf("Using cached sequence %d instead of provided %d for node %s\n",
+			nodeSettings.LastSequence, sequence, txParams.NodeURL)
+		sequence = nodeSettings.LastSequence
+	}
+	nodeSettings.mutex.RUnlock()
+
 	// We need to ensure the passed-in sequence is used
 	txp := &types.TxParams{
 		Config:    txParams.Config,
@@ -654,7 +665,7 @@ func BuildAndSignTransaction(
 
 	txBuilder.SetGasLimit(gasLimit)
 
-	// Set fee
+	// Set fee - get the gas price from config
 	gasPrice := txParams.Config.Gas.Low
 
 	// For zero gas price, check if we should use adaptive gas pricing
@@ -669,8 +680,19 @@ func BuildAndSignTransaction(
 		}
 	}
 
-	// Calculate fee based on gas limit and price
+	// Calculate initial fee amount
 	feeAmount := calculateInitialFee(gasLimit, gasPrice)
+
+	// Important: Check if we have a stored minimum fee for this node and use it if higher
+	nodeSettings.mutex.RLock()
+	if minFee, exists := nodeSettings.MinimumFees[txParams.Config.Denom]; exists {
+		if uint64(feeAmount) < minFee {
+			fmt.Printf("Using node-specific minimum fee %d instead of calculated %d for %s\n",
+				minFee, feeAmount, txParams.NodeURL)
+			feeAmount = int64(minFee)
+		}
+	}
+	nodeSettings.mutex.RUnlock()
 
 	// Ensure fee is at least the minimum required and proportional to the gas used
 	if gasPrice > 0 {
@@ -701,26 +723,6 @@ func BuildAndSignTransaction(
 
 	// Get account number
 	accNum := txParams.AccNum
-
-	// Check if we have a stored sequence number for this node
-	nodeSettings := getNodeSettings(txParams.NodeURL)
-	nodeSettings.mutex.RLock()
-	if nodeSettings.LastSequence > sequence {
-		sequence = nodeSettings.LastSequence
-	}
-	nodeSettings.mutex.RUnlock()
-
-	// Calculate initial fee amount as before
-	feeAmount = calculateInitialFee(gasLimit, gasPrice)
-
-	// Check if we have a stored minimum fee for this node
-	nodeSettings.mutex.RLock()
-	if minFee, exists := nodeSettings.MinimumFees[txParams.Config.Denom]; exists {
-		if uint64(feeAmount) < minFee {
-			feeAmount = int64(minFee)
-		}
-	}
-	nodeSettings.mutex.RUnlock()
 
 	// Get account information for the transaction signer
 	fromAddress, _ := txParams.MsgParams["from_address"].(string)
@@ -780,6 +782,7 @@ func BuildAndSignTransaction(
 		if matches := insufficientFeesRegex.FindStringSubmatch(err.Error()); len(matches) > 1 {
 			requiredFee, _ := strconv.ParseUint(matches[1], 10, 64)
 			updateMinimumFee(txParams.NodeURL, txParams.Config.Denom, requiredFee)
+			fmt.Printf("Fee adjustment: Retry with fee %d%s\n", requiredFee, txParams.Config.Denom)
 
 			// Retry with correct fee
 			txBuilder.SetFeeAmount(sdk.NewCoins(sdk.NewCoin(txParams.Config.Denom, sdkmath.NewInt(int64(requiredFee)))))
@@ -793,11 +796,16 @@ func BuildAndSignTransaction(
 		if matches := sequenceRegex.FindStringSubmatch(err.Error()); len(matches) > 1 {
 			correctSeq, _ := strconv.ParseUint(matches[1], 10, 64)
 			updateSequence(txParams.NodeURL, correctSeq)
+			fmt.Printf("Sequence adjustment: Using correct sequence %d instead of %d\n", correctSeq, sequence)
 
 			// Retry with correct sequence
 			return BuildAndSignTransaction(ctx, txParams, correctSeq, nil)
 		}
 	}
+
+	// If successful, update our node sequence cache preemptively
+	// This helps avoid sequence errors on subsequent transactions to the same node
+	updateSequence(txParams.NodeURL, sequence+1)
 
 	return txBytes, err
 }
