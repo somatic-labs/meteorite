@@ -41,7 +41,7 @@ func GetAddressManager() *AddressManager {
 
 // isAddressPrefix checks if a string starts with a known Cosmos chain address prefix
 func isAddressPrefix(prefix string) bool {
-	knownPrefixes := []string{"cosmos", "osmo", "juno", "sei", "star", "uni"}
+	knownPrefixes := []string{"cosmos", "osmo", "juno", "sei", "star", "uni", "atone"}
 	for _, known := range knownPrefixes {
 		if prefix == known {
 			return true
@@ -180,10 +180,12 @@ func (am *AddressManager) GetRandomAddressWithPrefix(prefix string) (string, err
 
 	// If we have addresses, pick a random one and convert its prefix
 	if len(am.addresses) > 0 {
+		fmt.Printf("Selecting from %d loaded addresses for prefix '%s'\n", len(am.addresses), prefix)
+
 		// Generate cryptographically secure random number
 		randomBytes := make([]byte, 8)
 		if _, err := rand.Read(randomBytes); err != nil {
-			return "", err
+			return "", fmt.Errorf("error generating random number: %w", err)
 		}
 
 		// Convert to an integer index
@@ -192,11 +194,18 @@ func (am *AddressManager) GetRandomAddressWithPrefix(prefix string) (string, err
 
 		// Get the address and convert it to the requested prefix
 		addr := am.addresses[idx]
-		return sdk.Bech32ifyAddressBytes(prefix, addr)
+		bech32Address, err := sdk.Bech32ifyAddressBytes(prefix, addr)
+		if err != nil {
+			return "", fmt.Errorf("error converting address to prefix '%s': %w", prefix, err)
+		}
+
+		fmt.Printf("Successfully converted address to %s (prefix: %s)\n", bech32Address, prefix)
+		return bech32Address, nil
 	}
 
 	// If we don't have addresses, return an error
-	return "", errors.New("no addresses available from balances.csv, fallback to random generation")
+	return "", fmt.Errorf("no addresses available from balances.csv (initialized: %v, attempted: %v, count: %d), fallback to random generation",
+		am.initialized, am.loadAttempted, len(am.addresses))
 }
 
 // GenerateDeterministicAccount generates a deterministic account based on the seed string

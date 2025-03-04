@@ -141,7 +141,8 @@ type Config struct {
 	Nodes          NodesConfig `toml:"nodes"`
 	BroadcastMode  string      `toml:"broadcast_mode"`
 	Positions      uint        `toml:"positions"`
-	FromAddress    string      `toml:"from_address"` // Default sender address
+	FromAddress    string      `toml:"from_address"`  // Default sender address
+	BalanceFunds   bool        `toml:"balance_funds"` // Whether to automatically balance funds between accounts
 }
 
 type MsgParams struct {

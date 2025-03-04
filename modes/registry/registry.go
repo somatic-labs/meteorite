@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/somatic-labs/meteorite/broadcast"
@@ -34,7 +33,7 @@ const (
 )
 
 // RunRegistryMode runs the registry mode UI
-func RunRegistryMode() error {
+func RunRegistryMode(enableViz bool) error {
 	fmt.Println("Meteorite Chain Registry Tester")
 	fmt.Println("==============================")
 
@@ -99,38 +98,13 @@ func RunRegistryMode() error {
 		os.Stdout = logFile
 	}
 
-	// User input - should we run the test immediately or save to file?
-	// This part now has discovery logs redirected to a file
-	reader := bufio.NewReader(os.Stdin)
-
 	// Restore stdout for user interaction
 	if logFile != nil {
 		os.Stdout = originalStdout
 	}
 
-	fmt.Println("\n🚀 Do you want to:")
-	fmt.Println("  1. Run the test immediately")
-	fmt.Println("  2. Save configuration to file and exit")
-	fmt.Print("\nEnter your choice (1 or 2): ")
-
-	choice, err := reader.ReadString('\n')
-	if err != nil {
-		return fmt.Errorf("error reading input: %w", err)
-	}
-
-	choice = strings.TrimSpace(choice)
-
-	switch choice {
-	case "1":
-		fmt.Println("\n🚀 Running chain test...")
-		return runChainTest(selection, configMap)
-	case "2":
-		fmt.Println("\n💾 Saving configuration to file...")
-		return saveConfigToFile(selection, configMap)
-	default:
-		fmt.Println("\n❌ Invalid choice. Exiting.")
-		return nil
-	}
+	fmt.Println("\n🚀 Running chain test...")
+	return runChainTest(selection, configMap, enableViz)
 }
 
 // saveConfigToFile saves the configuration to a TOML file
@@ -251,12 +225,7 @@ func saveConfigToFile(selection *chainregistry.ChainSelection, configMap map[str
 }
 
 // runChainTest runs the chain test using the provided configuration
-func runChainTest(selection *chainregistry.ChainSelection, configMap map[string]interface{}) error {
-	// Check if seedphrase file exists
-	if _, err := os.Stat("seedphrase"); os.IsNotExist(err) {
-		return errors.New("seedphrase file not found in current directory")
-	}
-
+func runChainTest(selection *chainregistry.ChainSelection, configMap map[string]interface{}, enableViz bool) error {
 	// Convert map to types.Config
 	config := mapToConfig(configMap)
 
@@ -264,6 +233,14 @@ func runChainTest(selection *chainregistry.ChainSelection, configMap map[string]
 	if config.Multisend {
 		config.NumMultisend = 3000
 		fmt.Println("Enforcing 3000 recipients per multisend transaction for optimal performance")
+	}
+
+	// Make sure we have a channel configured for IBC transfers
+	if config.Channel == "" {
+		// Set a default channel - this will only be used as a fallback
+		config.Channel = "channel-0"
+		fmt.Println("Warning: No IBC channel specified, using default channel-0")
+		fmt.Println("IBC transfers may fail if the chain doesn't have this channel configured")
 	}
 
 	// Print the configuration to help with debugging
@@ -287,32 +264,15 @@ func runChainTest(selection *chainregistry.ChainSelection, configMap map[string]
 	}
 
 	// Optimize gas settings for the specific message type
-	switch config.MsgType {
-	case "bank_send":
-		// Bank send typically needs less gas
-		config.BaseGas = 80000
-		config.GasPerByte = 80
-	case MsgBankMultisend:
-		// Multisend needs more gas based on number of recipients
-		config.BaseGas = 100000 + int64(config.NumMultisend)*20000
-		config.GasPerByte = 100
-	case "ibc_transfer":
-		// IBC transfers need more gas
-		config.BaseGas = 150000
-		config.GasPerByte = 100
-	case "store_code", "instantiate_contract":
-		// Wasm operations need significantly more gas
-		config.BaseGas = 400000
-		config.GasPerByte = 150
-	}
+	updateGasConfig(&config)
 
-	fmt.Printf("🔥 Optimized gas settings: BaseGas=%d, GasPerByte=%d, Gas.Low=%d\n",
-		config.BaseGas, config.GasPerByte, config.Gas.Low)
+	// Then configure the gas price settings
+	configureGasPrice(&config)
 
-	// Read the seed phrase
-	mnemonic, err := os.ReadFile("seedphrase")
+	// Ask for seedphrase - interactively prompt the user if not found in any of the expected locations
+	mnemonic, err := getMnemonic()
 	if err != nil {
-		return fmt.Errorf("failed to read seed phrase: %v", err)
+		return fmt.Errorf("failed to get mnemonic: %v", err)
 	}
 
 	// Set Bech32 prefixes and seal the configuration once
@@ -323,21 +283,22 @@ func runChainTest(selection *chainregistry.ChainSelection, configMap map[string]
 	sdkConfig.Seal()
 
 	// Generate accounts
+	fmt.Println("\n🔑 Generating accounts...")
 	accounts := generateAccounts(config, mnemonic)
 
 	// Print account information
 	printAccountInformation(accounts, config)
 
 	// Check and adjust balances if needed
+	fmt.Println("\n💰 Checking account balances...")
 	if err := checkAndAdjustBalances(accounts, config); err != nil {
 		return fmt.Errorf("failed to handle balance adjustment: %v", err)
 	}
 
-	// Get chain ID
-	chainID := config.Chain // Use the chain ID from the config
+	// Get chain ID (use the chain ID from the config)
+	chainID := config.Chain
 
-	// Initialize visualizer
-	enableViz := true
+	// Initialize visualizer if enabled
 	if enableViz {
 		fmt.Println("\n📊 Initializing transaction visualizer...")
 		if err := broadcast.InitVisualizer(config.Nodes.RPC); err != nil {
@@ -360,14 +321,105 @@ func runChainTest(selection *chainregistry.ChainSelection, configMap map[string]
 	return nil
 }
 
+// launchTransactionBroadcasters launches the parallel broadcaster
+func launchTransactionBroadcasters(
+	accounts []types.Account,
+	config types.Config,
+	chainID string,
+	distributor *bankmodule.MultiSendDistributor,
+	enableViz bool,
+) {
+	// Use the new ParallelBroadcast function
+	startTime := time.Now()
+	successCount, failCount := broadcast.ParallelBroadcast(accounts, config, chainID, 1000)
+	duration := time.Since(startTime)
+
+	fmt.Printf("\n✅ Broadcasting complete: %d successful, %d failed transactions in %v (%.2f TPS)\n",
+		successCount, failCount, duration, float64(successCount)/duration.Seconds())
+}
+
+// getMnemonic gets the mnemonic from the user, either from a file or interactively
+func getMnemonic() ([]byte, error) {
+	// First try to read from the seedphrase file in the current directory
+	mnemonic, err := os.ReadFile("seedphrase")
+	if err == nil {
+		return mnemonic, nil
+	}
+
+	// If that fails, prompt the user for their mnemonic
+	fmt.Println("\n🔑 Seedphrase file not found. Please enter your seedphrase:")
+	fmt.Println("Warning: Your seedphrase will be visible in the terminal. Make sure no one is watching.")
+
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("> ")
+	mnemonicStr, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, fmt.Errorf("error reading input: %w", err)
+	}
+
+	// Trim whitespace and convert to bytes
+	mnemonicStr = strings.TrimSpace(mnemonicStr)
+	if mnemonicStr == "" {
+		return nil, errors.New("empty seedphrase provided")
+	}
+
+	return []byte(mnemonicStr), nil
+}
+
 // mapToConfig converts a map[string]interface{} to types.Config
 func mapToConfig(configMap map[string]interface{}) types.Config {
 	var config types.Config
 
 	// Set basic fields
-	config.Chain = configMap["chain"].(string)
-	config.Denom = configMap["denom"].(string)
-	config.Prefix = configMap["prefix"].(string)
+	if chainValue, ok := configMap["chain"]; ok && chainValue != nil {
+		if chainStr, ok := chainValue.(string); ok && chainStr != "" {
+			config.Chain = chainStr
+		} else {
+			config.Chain = "cosmoshub"
+			fmt.Println("Warning: chain not specified or invalid in config, defaulting to 'cosmoshub'")
+		}
+	} else {
+		config.Chain = "cosmoshub"
+		fmt.Println("Warning: chain not specified in config, defaulting to 'cosmoshub'")
+	}
+
+	if denomValue, ok := configMap["denom"]; ok && denomValue != nil {
+		if denomStr, ok := denomValue.(string); ok && denomStr != "" {
+			config.Denom = denomStr
+		} else {
+			config.Denom = "uatom"
+			fmt.Println("Warning: denom not specified or invalid in config, defaulting to 'uatom'")
+		}
+	} else {
+		config.Denom = "uatom"
+		fmt.Println("Warning: denom not specified in config, defaulting to 'uatom'")
+	}
+
+	if prefixValue, ok := configMap["prefix"]; ok && prefixValue != nil {
+		if prefixStr, ok := prefixValue.(string); ok && prefixStr != "" {
+			config.Prefix = prefixStr
+		} else {
+			config.Prefix = "cosmos"
+			fmt.Println("Warning: prefix not specified or invalid in config, defaulting to 'cosmos'")
+		}
+	} else {
+		config.Prefix = "cosmos"
+		fmt.Println("Warning: prefix not specified in config, defaulting to 'cosmos'")
+	}
+
+	// Set balance_funds flag
+	if balanceFundsValue, ok := configMap["balance_funds"]; ok {
+		if balanceFunds, ok := balanceFundsValue.(bool); ok {
+			config.BalanceFunds = balanceFunds
+		} else {
+			// Default to false if not a boolean
+			config.BalanceFunds = false
+			fmt.Println("Warning: balance_funds specified but not a boolean, defaulting to false")
+		}
+	} else {
+		// Default to false if not specified
+		config.BalanceFunds = false
+	}
 
 	// Handle slip44 value for address derivation
 	if slip44, ok := configMap["slip44"].(int); ok {
@@ -477,7 +529,7 @@ func mapToConfig(configMap map[string]interface{}) types.Config {
 	}
 
 	// Before returning, update the gas config to ensure adaptive gas is enabled
-	updateGasConfig(&config)
+	configureGasPrice(&config)
 
 	return config
 }
@@ -1050,127 +1102,6 @@ func initializeDistributor(config types.Config, enableViz bool) *bankmodule.Mult
 	return distributor
 }
 
-// launchTransactionBroadcasters launches goroutines to broadcast transactions
-func launchTransactionBroadcasters(
-	accounts []types.Account,
-	config types.Config,
-	chainID string,
-	distributor *bankmodule.MultiSendDistributor,
-	enableViz bool,
-) {
-	var wg sync.WaitGroup
-
-	for _, account := range accounts {
-		wg.Add(1)
-		go func(acct types.Account) {
-			defer wg.Done()
-			processAccount(acct, config, chainID, distributor, enableViz)
-		}(account)
-	}
-
-	wg.Wait()
-}
-
-// processAccount handles transaction broadcasting for a single account
-func processAccount(
-	acct types.Account,
-	config types.Config,
-	chainID string,
-	distributor *bankmodule.MultiSendDistributor,
-	enableViz bool,
-) {
-	// Get account info
-	sequence, accNum, err := lib.GetAccountInfo(acct.Address, config)
-	if err != nil {
-		log.Printf("Failed to get account info for %s: %v", acct.Address, err)
-		return
-	}
-
-	// Prepare transaction parameters
-	txParams := prepareTransactionParams(acct, config, chainID, sequence, accNum, distributor)
-
-	// Log the start of processing for this account
-	if enableViz {
-		broadcast.LogVisualizerDebug(fmt.Sprintf("Starting transaction broadcasts for account %s (Position %d)",
-			acct.Address, acct.Position))
-	}
-
-	// Broadcast transactions
-	successfulTxs, failedTxs, responseCodes, _ := broadcast.Loop(txParams, BatchSize, int(acct.Position))
-
-	// Print results
-	printResults(acct.Address, successfulTxs, failedTxs, responseCodes)
-}
-
-// prepareTransactionParams prepares the transaction parameters for an account
-func prepareTransactionParams(
-	acct types.Account,
-	config types.Config,
-	chainID string,
-	sequence uint64,
-	accNum uint64,
-	distributor *bankmodule.MultiSendDistributor,
-) types.TransactionParams {
-	// Use the distributor to get the next RPC endpoint if available
-	var nodeURL string
-	var txMsgType string // Determine the message type based on availability of distributor
-
-	if distributor != nil {
-		nodeURL = distributor.GetNextRPC()
-		if nodeURL == "" {
-			nodeURL = config.Nodes.RPC[0] // Fallback
-		}
-
-		// Use MsgBankMultisend when distributor is available and multisend is enabled
-		if config.MsgType == "bank_send" && config.Multisend {
-			txMsgType = MsgBankMultisend // Use our special distributed multisend
-		} else {
-			txMsgType = config.MsgType
-		}
-	} else {
-		nodeURL = config.Nodes.RPC[0] // Default to first RPC
-		txMsgType = config.MsgType
-	}
-
-	// Convert MsgParams struct to map
-	msgParamsMap := types.ConvertMsgParamsToMap(config.MsgParams)
-
-	// Explicitly set the from_address to the account's address
-	// This ensures it's always set correctly even if not present in config.MsgParams
-	msgParamsMap["from_address"] = acct.Address
-
-	// Add distributor to msgParams for multisend operations
-	if distributor != nil && txMsgType == MsgBankMultisend {
-		msgParamsMap["distributor"] = distributor
-	}
-
-	return types.TransactionParams{
-		Config:      config,
-		NodeURL:     nodeURL,
-		ChainID:     chainID,
-		Sequence:    sequence,
-		AccNum:      accNum,
-		PrivKey:     acct.PrivKey,
-		PubKey:      acct.PubKey,
-		AcctAddress: acct.Address,
-		MsgType:     txMsgType,
-		MsgParams:   msgParamsMap,
-		Distributor: distributor, // Pass distributor for multisend operations
-	}
-}
-
-// printResults prints the results of transaction broadcasting
-func printResults(address string, successfulTxs, failedTxs int, responseCodes map[uint32]int) {
-	fmt.Printf("Account %s: Successful transactions: %d, Failed transactions: %d\n",
-		address, successfulTxs, failedTxs)
-
-	fmt.Println("Response code breakdown:")
-	for code, count := range responseCodes {
-		percentage := float64(count) / float64(successfulTxs+failedTxs) * 100
-		fmt.Printf("Code %d: %d (%.2f%%)\n", code, count, percentage)
-	}
-}
-
 // cleanupResources cleans up resources used by the program
 func cleanupResources(distributor *bankmodule.MultiSendDistributor, enableViz bool) {
 	fmt.Println("✅ All transactions completed. Cleaning up resources...")
@@ -1184,8 +1115,98 @@ func cleanupResources(distributor *bankmodule.MultiSendDistributor, enableViz bo
 	}
 }
 
-// Update the GasConfig when loading from a config map to ensure adaptive gas is enabled
+// updateGasConfig optimizes gas settings based on the message type
 func updateGasConfig(config *types.Config) {
+	switch config.MsgType {
+	case "bank_send":
+		// Bank send typically needs less gas
+		config.BaseGas = 80000
+		config.GasPerByte = 80
+	case MsgBankMultisend:
+		// Multisend needs more gas based on number of recipients
+		config.BaseGas = 100000 + int64(config.NumMultisend)*20000
+		config.GasPerByte = 100
+	case "ibc_transfer":
+		// IBC transfers need more gas
+		config.BaseGas = 150000
+		config.GasPerByte = 100
+	case "store_code", "instantiate_contract":
+		// Wasm operations need significantly more gas
+		config.BaseGas = 400000
+		config.GasPerByte = 150
+	}
+
+	fmt.Printf("🔥 Optimized gas settings: BaseGas=%d, GasPerByte=%d, Gas.Low=%d\n",
+		config.BaseGas, config.GasPerByte, config.Gas.Low)
+}
+
+// printConfig prints the configuration details for debugging
+func printConfig(config types.Config) {
+	fmt.Println("\n⚙️ Configuration:")
+	fmt.Printf("Chain: %s\n", config.Chain)
+	fmt.Printf("Denom: %s\n", config.Denom)
+	fmt.Printf("Prefix: %s\n", config.Prefix)
+	fmt.Printf("Positions: %d\n", config.Positions)
+	fmt.Printf("Multisend: %v\n", config.Multisend)
+	if config.Multisend {
+		fmt.Printf("Num Multisend: %d\n", config.NumMultisend)
+	}
+	fmt.Printf("Broadcast Mode: %s\n", config.BroadcastMode)
+	fmt.Printf("Auto-balance Funds: %v\n", config.BalanceFunds)
+
+	// Gas Configuration
+	fmt.Println("\nGas Configuration:")
+	fmt.Printf("Low: %d\n", config.Gas.Low)
+	fmt.Printf("Medium: %d\n", config.Gas.Medium)
+	fmt.Printf("High: %d\n", config.Gas.High)
+	fmt.Printf("Precision: %d\n", config.Gas.Precision)
+
+	// Node Configuration
+	fmt.Println("\nNode Configuration:")
+	for i, node := range config.Nodes.RPC {
+		fmt.Printf("RPC Node %d: %s\n", i+1, node)
+	}
+}
+
+func RunPositioning(config types.Config, distributor *bankmodule.MultiSendDistributor, enableViz bool) {
+	// Set up chain ID
+	chainID := config.Chain
+	if chainID == "" {
+		log.Fatal("Chain ID is required")
+	}
+
+	log.Printf("[Registry Mode] Positioning of %d accounts on chain %s", config.Positions, chainID)
+
+	// Generate accounts
+	accounts := generateAccounts(config, nil)
+	if len(accounts) == 0 {
+		log.Fatal("No accounts generated")
+	}
+
+	// Assign accounts to nodes at startup
+	if len(config.Nodes.RPC) > 1 {
+		log.Printf("Found %d RPC nodes, assigning accounts...", len(config.Nodes.RPC))
+		// Assign accounts to nodes using round-robin
+		for i, acct := range accounts {
+			nodeIndex := i % len(config.Nodes.RPC)
+			nodeURL := config.Nodes.RPC[nodeIndex]
+			broadcast.AssignNodeToAccount(acct.Address, nodeURL)
+			log.Printf("Assigned account %s to node %s", acct.Address, nodeURL)
+		}
+		log.Printf("Assigned %d accounts to %d nodes for parallel broadcasting",
+			len(accounts), len(config.Nodes.RPC))
+	} else {
+		log.Printf("Only one RPC node specified, no parallel node assignment performed")
+	}
+
+	// Use the ParallelBroadcast function for handling transaction broadcasting
+	successCount, failCount := broadcast.ParallelBroadcast(accounts, config, chainID, 1000)
+	fmt.Printf("\n✅ Broadcasting complete: %d successful, %d failed transactions\n",
+		successCount, failCount)
+}
+
+// configureGasPrice sets up gas price settings when loading from a config map
+func configureGasPrice(config *types.Config) {
 	// Enable adaptive gas by default
 	// This ensures we're always using the most efficient gas settings
 	if config.Gas.Medium == 0 {
@@ -1225,18 +1246,4 @@ func updateGasConfig(config *types.Config) {
 
 	fmt.Printf("Gas optimization enabled: Using adaptive gas strategy with base price %s%s\n",
 		config.Gas.Price, config.Gas.Denom)
-}
-
-// printConfig prints the configuration details for debugging
-func printConfig(config types.Config) {
-	fmt.Println("=== Registry Mode Configuration ===")
-	fmt.Printf("Chain: %s\n", config.Chain)
-	fmt.Printf("Prefix: %s\n", config.Prefix)
-	fmt.Printf("Denom: %s\n", config.Denom)
-	fmt.Printf("Slip44: %d\n", config.Slip44)
-	fmt.Printf("Positions: %d\n", config.Positions)
-	fmt.Printf("Message Type: %s\n", config.MsgType)
-	fmt.Printf("Multisend: %v\n", config.Multisend)
-	fmt.Printf("Num Multisend: %d\n", config.NumMultisend)
-	fmt.Println("==================================")
 }

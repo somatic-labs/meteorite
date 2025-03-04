@@ -27,6 +27,8 @@ type PeerDiscovery struct {
 	chainID          string
 	visitedNodes     map[string]bool
 	openRPCEndpoints []string
+	registryNodes    map[string]bool // Track which nodes came from the registry
+	nonRegistryNodes []string        // Special list of non-registry nodes
 	visitorMutex     sync.RWMutex
 	resultsMutex     sync.RWMutex
 	semaphore        chan struct{}
@@ -38,14 +40,26 @@ type PeerDiscovery struct {
 func New(initialEndpoints []string) *PeerDiscovery {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &PeerDiscovery{
+	pd := &PeerDiscovery{
 		initialEndpoints: initialEndpoints,
 		visitedNodes:     make(map[string]bool),
 		openRPCEndpoints: make([]string, 0),
+		registryNodes:    make(map[string]bool),
+		nonRegistryNodes: make([]string, 0),
 		semaphore:        make(chan struct{}, MaxConcurrentChecks),
 		ctx:              ctx,
 		cancel:           cancel,
 	}
+
+	// Mark all initial endpoints as registry nodes
+	for _, endpoint := range initialEndpoints {
+		normalized := normalizeEndpoint(endpoint)
+		if normalized != "" {
+			pd.registryNodes[normalized] = true
+		}
+	}
+
+	return pd
 }
 
 // DiscoverPeers discovers peers with open RPCs and returns their endpoints
@@ -169,6 +183,15 @@ func (pd *PeerDiscovery) checkNode(nodeAddr string) {
 	// Add to open RPC endpoints
 	pd.resultsMutex.Lock()
 	pd.openRPCEndpoints = append(pd.openRPCEndpoints, nodeAddr)
+
+	// Check if this is a non-registry node
+	if _, isRegistry := pd.registryNodes[nodeAddr]; !isRegistry {
+		pd.nonRegistryNodes = append(pd.nonRegistryNodes, nodeAddr)
+		fmt.Printf("Found non-registry node: %s ✅\n", nodeAddr)
+	} else {
+		fmt.Printf("Found registry node: %s\n", nodeAddr)
+	}
+
 	pd.resultsMutex.Unlock()
 
 	fmt.Printf("Found open RPC endpoint: %s (Chain ID: %s)\n", nodeAddr, pd.chainID)
@@ -407,4 +430,41 @@ func bytes4ToUint32(ip net.IP) uint32 {
 		ip = ip[12:16] // Use the last 4 bytes if it's an IPv6 address
 	}
 	return uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
+}
+
+// GetPrioritizedEndpoints returns all discovered endpoints with non-registry nodes first
+func (pd *PeerDiscovery) GetPrioritizedEndpoints() []string {
+	pd.resultsMutex.RLock()
+	defer pd.resultsMutex.RUnlock()
+
+	// Create a result slice with capacity for all endpoints
+	result := make([]string, 0, len(pd.openRPCEndpoints))
+
+	// Track which endpoints we've already added to avoid duplication
+	added := make(map[string]bool)
+
+	// First add all non-registry nodes
+	for _, endpoint := range pd.nonRegistryNodes {
+		result = append(result, endpoint)
+		added[endpoint] = true
+	}
+
+	// Then add all other nodes
+	for _, endpoint := range pd.openRPCEndpoints {
+		if !added[endpoint] {
+			result = append(result, endpoint)
+		}
+	}
+
+	return result
+}
+
+// GetNonRegistryNodes returns only the non-registry nodes
+func (pd *PeerDiscovery) GetNonRegistryNodes() []string {
+	pd.resultsMutex.RLock()
+	defer pd.resultsMutex.RUnlock()
+
+	result := make([]string, len(pd.nonRegistryNodes))
+	copy(result, pd.nonRegistryNodes)
+	return result
 }
