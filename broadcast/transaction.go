@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	types "github.com/somatic-labs/meteorite/types"
@@ -30,6 +32,10 @@ const (
 	minGasIbcTransfer   = 150000
 	minGasWasmExecute   = 300000
 	minGasDefault       = 100000
+
+	// Error patterns
+	insufficientFeesPattern = "insufficient fees; got: \\d+\\w+ required: (\\d+)\\w+"
+	sequenceMismatchPattern = "account sequence mismatch: expected (\\d+), got \\d+"
 )
 
 // multiSendDistributor defines the interface for creating MultiSend messages
@@ -520,12 +526,75 @@ func getMsgTypeFromMsg(msg sdk.Msg) string {
 	return "unknown"
 }
 
-// BuildAndSignTransaction builds and signs a transaction from the provided parameters
+// Add this new type to track node-specific settings
+type NodeSettings struct {
+	MinimumFees    map[string]uint64 // denom -> amount
+	LastSequence   uint64
+	LastUpdateTime time.Time
+	mutex          sync.RWMutex
+}
+
+// Add this as a package-level variable
+var (
+	nodeSettingsMap = make(map[string]*NodeSettings)
+	nodeSettingsMu  sync.RWMutex
+)
+
+// Add this new function to get or create node settings
+func getNodeSettings(nodeURL string) *NodeSettings {
+	nodeSettingsMu.Lock()
+	defer nodeSettingsMu.Unlock()
+
+	if settings, exists := nodeSettingsMap[nodeURL]; exists {
+		return settings
+	}
+
+	settings := &NodeSettings{
+		MinimumFees: make(map[string]uint64),
+	}
+	nodeSettingsMap[nodeURL] = settings
+	return settings
+}
+
+// Add this function to update minimum fees for a node
+func updateMinimumFee(nodeURL, denom string, amount uint64) {
+	settings := getNodeSettings(nodeURL)
+	settings.mutex.Lock()
+	defer settings.mutex.Unlock()
+
+	settings.MinimumFees[denom] = amount
+	settings.LastUpdateTime = time.Now()
+}
+
+// Add this function to update sequence for a node
+func updateSequence(nodeURL string, sequence uint64) {
+	settings := getNodeSettings(nodeURL)
+	settings.mutex.Lock()
+	defer settings.mutex.Unlock()
+
+	settings.LastSequence = sequence
+	settings.LastUpdateTime = time.Now()
+}
+
+// calculateInitialFee calculates the initial fee amount based on gas limit and price
+func calculateInitialFee(gasLimit uint64, gasPrice int64) int64 {
+	// Scale to make fees reasonable
+	feeAmount := int64(gasLimit) * gasPrice / 10000
+
+	// Ensure minimum fee for non-zero gas price
+	if feeAmount < 1 && gasPrice > 0 {
+		feeAmount = 1
+	}
+
+	return feeAmount
+}
+
+// Modify BuildAndSignTransaction to handle errors and retry
 func BuildAndSignTransaction(
 	ctx context.Context,
 	txParams types.TransactionParams,
 	sequence uint64,
-	_ interface{}, // encodingConfig is not used, as we create our own client context
+	_ interface{},
 ) ([]byte, error) {
 	// We need to ensure the passed-in sequence is used
 	txp := &types.TxParams{
@@ -601,15 +670,12 @@ func BuildAndSignTransaction(
 	}
 
 	// Calculate fee based on gas limit and price
-	feeAmount := int64(gasLimit) * gasPrice / 100000 // Scale to make fees reasonable
-	if feeAmount < 1 && gasPrice > 0 {
-		feeAmount = 1 // Ensure minimum fee for non-zero gas price
-	}
+	feeAmount := calculateInitialFee(gasLimit, gasPrice)
 
 	// Ensure fee is at least the minimum required and proportional to the gas used
 	if gasPrice > 0 {
 		// For large multisend transactions, ensure the fee is proportionally higher
-		if txParams.MsgType == "bank_multisend" && gasLimit > 1000000 {
+		if txParams.MsgType == "bank_multisend" && gasLimit > 100000 {
 			minFee := gasLimit / 10000 // Much higher minimum fee for large multisends
 			if feeAmount < int64(minFee) {
 				feeAmount = int64(minFee)
@@ -635,6 +701,33 @@ func BuildAndSignTransaction(
 
 	// Get account number
 	accNum := txParams.AccNum
+
+	// Check if we have a stored sequence number for this node
+	nodeSettings := getNodeSettings(txParams.NodeURL)
+	nodeSettings.mutex.RLock()
+	if nodeSettings.LastSequence > sequence {
+		sequence = nodeSettings.LastSequence
+	}
+	nodeSettings.mutex.RUnlock()
+
+	// Calculate initial fee amount as before
+	feeAmount = calculateInitialFee(gasLimit, gasPrice)
+
+	// Check if we have a stored minimum fee for this node
+	nodeSettings.mutex.RLock()
+	if minFee, exists := nodeSettings.MinimumFees[txParams.Config.Denom]; exists {
+		if uint64(feeAmount) < minFee {
+			feeAmount = int64(minFee)
+		}
+	}
+	nodeSettings.mutex.RUnlock()
+
+	// Get account information for the transaction signer
+	fromAddress, _ := txParams.MsgParams["from_address"].(string)
+	accNum, _, err = GetAccountInfo(ctx, clientCtx, fromAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get account info: %w", err)
+	}
 
 	// Set up signature
 	sigV2 := signing.SignatureV2{
@@ -680,5 +773,63 @@ func BuildAndSignTransaction(
 		return nil, fmt.Errorf("failed to encode transaction: %w", err)
 	}
 
-	return txBytes, nil
+	// Add error handling for insufficient fees and sequence mismatch
+	if err != nil {
+		// Check for insufficient fees error
+		insufficientFeesRegex := regexp.MustCompile(insufficientFeesPattern)
+		if matches := insufficientFeesRegex.FindStringSubmatch(err.Error()); len(matches) > 1 {
+			requiredFee, _ := strconv.ParseUint(matches[1], 10, 64)
+			updateMinimumFee(txParams.NodeURL, txParams.Config.Denom, requiredFee)
+
+			// Retry with correct fee
+			txBuilder.SetFeeAmount(sdk.NewCoins(sdk.NewCoin(txParams.Config.Denom, sdkmath.NewInt(int64(requiredFee)))))
+
+			// Rebuild and sign with new fee
+			return finalizeTx(ctx, clientCtx, txBuilder, txParams, sequence)
+		}
+
+		// Check for sequence mismatch error
+		sequenceRegex := regexp.MustCompile(sequenceMismatchPattern)
+		if matches := sequenceRegex.FindStringSubmatch(err.Error()); len(matches) > 1 {
+			correctSeq, _ := strconv.ParseUint(matches[1], 10, 64)
+			updateSequence(txParams.NodeURL, correctSeq)
+
+			// Retry with correct sequence
+			return BuildAndSignTransaction(ctx, txParams, correctSeq, nil)
+		}
+	}
+
+	return txBytes, err
+}
+
+// Add this helper function to finalize transaction
+func finalizeTx(
+	ctx context.Context,
+	clientCtx sdkclient.Context,
+	txBuilder sdkclient.TxBuilder,
+	txParams types.TransactionParams,
+	sequence uint64,
+) ([]byte, error) {
+	sigV2, err := tx.SignWithPrivKey(
+		ctx,
+		signing.SignMode_SIGN_MODE_DIRECT,
+		xauthsigning.SignerData{
+			ChainID:       txParams.ChainID,
+			AccountNumber: txParams.AccNum,
+			Sequence:      sequence,
+		},
+		txBuilder,
+		txParams.PrivKey,
+		clientCtx.TxConfig,
+		sequence,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign transaction: %w", err)
+	}
+
+	if err := txBuilder.SetSignatures(sigV2); err != nil {
+		return nil, fmt.Errorf("failed to set signatures: %w", err)
+	}
+
+	return clientCtx.TxConfig.TxEncoder()(txBuilder.GetTx())
 }
