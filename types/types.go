@@ -117,31 +117,33 @@ type Fee struct {
 }
 
 type Config struct {
-	Bytes          int64       `toml:"bytes"`
-	Chain          string      `toml:"chain"`
-	Channel        string      `toml:"channel"`
-	Denom          string      `toml:"denom"`
-	Prefix         string      `toml:"prefix"`
-	AccountPrefix  string      `toml:"account_prefix"` // Bech32 prefix for account addresses (e.g., "cosmos", "osmo", etc.)
-	GasPerByte     int64       `toml:"gas_per_byte"`
-	BaseGas        int64       `toml:"base_gas"`
-	IbCMemo        string      `toml:"ibc_memo"`
-	Memo           string      `toml:"memo"`
-	IbCMemoRepeat  int         `toml:"ibc_memo_repeat"`
-	RandMin        int64       `toml:"rand_min"`
-	RandMax        int64       `toml:"rand_max"`
-	RevisionNumber int64       `toml:"revision_number"`
-	TimeoutHeight  int64       `toml:"timeout_height"`
-	Slip44         int         `toml:"slip44"`
-	MsgType        string      `toml:"msg_type"`
-	Multisend      bool        `toml:"multisend"`     // Whether to use multisend for bank transactions
-	NumMultisend   int         `toml:"num_multisend"` // Number of transactions to include in a multisend
-	MsgParams      MsgParams   `toml:"msg_params"`
-	Gas            GasConfig   `toml:"gas"`
-	Nodes          NodesConfig `toml:"nodes"`
-	BroadcastMode  string      `toml:"broadcast_mode"`
-	Positions      uint        `toml:"positions"`
-	FromAddress    string      `toml:"from_address"` // Default sender address
+	Bytes           int64       `toml:"bytes"`
+	Chain           string      `toml:"chain"`
+	Channel         string      `toml:"channel"`
+	Denom           string      `toml:"denom"`
+	Prefix          string      `toml:"prefix"`
+	AccountPrefix   string      `toml:"account_prefix"` // Bech32 prefix for account addresses (e.g., "cosmos", "osmo", etc.)
+	GasPerByte      int64       `toml:"gas_per_byte"`
+	BaseGas         int64       `toml:"base_gas"`
+	IbCMemo         string      `toml:"ibc_memo"`
+	Memo            string      `toml:"memo"`
+	IbCMemoRepeat   int         `toml:"ibc_memo_repeat"`
+	RandMin         int64       `toml:"rand_min"`
+	RandMax         int64       `toml:"rand_max"`
+	RevisionNumber  int64       `toml:"revision_number"`
+	TimeoutHeight   int64       `toml:"timeout_height"`
+	Slip44          int         `toml:"slip44"`
+	MsgType         string      `toml:"msg_type"`
+	Multisend       bool        `toml:"multisend"`         // Whether to use multisend for bank transactions
+	Hybrid          bool        `toml:"hybrid"`            // Whether to use hybrid mode (mix of sends and multisends)
+	NumMultisend    int         `toml:"num_multisend"`     // Number of transactions to include in a multisend
+	NumOutReceivers int         `toml:"num_out_receivers"` // Number of receivers for multisend transactions
+	MsgParams       MsgParams   `toml:"msg_params"`
+	Gas             GasConfig   `toml:"gas"`
+	Nodes           NodesConfig `toml:"nodes"`
+	BroadcastMode   string      `toml:"broadcast_mode"`
+	Positions       uint        `toml:"positions"`
+	FromAddress     string      `toml:"from_address"` // Default sender address
 }
 
 type MsgParams struct {
@@ -190,8 +192,10 @@ func (m *MsgParams) InitDefaultGasScalingFactors() {
 type GasConfig struct {
 	Zero        int64  `toml:"zero"`
 	Low         int64  `toml:"low"`
-	Medium      int64  `toml:"medium"`
-	High        int64  `toml:"high"`
+	Medium      int64  `toml:"medium"` // Renamed from Mid -> Medium
+	High        int64  `toml:"high"`   // Renamed from Max -> High
+	Max         int64  `toml:"max"`    // New maximum gas setting
+	Mid         int64  `toml:"mid"`    // Alias for Medium
 	Precision   int64  `toml:"precision"`
 	Denom       string `toml:"denom"`        // Gas price denom
 	Price       string `toml:"price"`        // Gas price as a string

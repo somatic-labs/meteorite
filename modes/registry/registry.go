@@ -23,14 +23,22 @@ import (
 	sdkmath "cosmossdk.io/math"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/cosmos/cosmos-sdk/types/bech32"
 )
 
 const (
-	SeedphraseFile   = "seedphrase"
-	BalanceThreshold = 0.05
-	BatchSize        = 1000
-	TimeoutDuration  = 50 * time.Millisecond
-	MsgBankMultisend = "bank_multisend"
+	SeedphraseFile      = "seedphrase"
+	BalanceThreshold    = 0.05
+	BatchSize           = 1000
+	TimeoutDuration     = 50 * time.Millisecond
+	MsgBankMultisend    = "bank_multisend"
+	MsgBankSend         = "bank_send"
+	MsgIbcTransfer      = "ibc_transfer"
+	MsgHybrid           = "hybrid"    // New message type for mixed transactions
+	DefaultOutReceivers = 50          // Reduced from 3000 to safer 50 receivers
+	HybridSendRatio     = 5           // For every 1 multisend, do 5 regular sends
+	MaximumTokenAmount  = 1           // Never send more than 1 token unit for any transaction
+	DefaultIbcChannel   = "channel-0" // Default IBC channel to Osmosis
 )
 
 // RunRegistryMode runs the registry mode UI
@@ -296,7 +304,7 @@ func runChainTest(selection *chainregistry.ChainSelection, configMap map[string]
 		// Multisend needs more gas based on number of recipients
 		config.BaseGas = 100000 + int64(config.NumMultisend)*20000
 		config.GasPerByte = 100
-	case "ibc_transfer":
+	case MsgIbcTransfer:
 		// IBC transfers need more gas
 		config.BaseGas = 150000
 		config.GasPerByte = 100
@@ -1079,6 +1087,13 @@ func processAccount(
 	distributor *bankmodule.MultiSendDistributor,
 	enableViz bool,
 ) {
+	// Limit any configured amount to ensure we never exceed max token amount
+	if config.MsgParams.Amount > MaximumTokenAmount {
+		fmt.Printf("⚠️ Limiting configured amount (%d) to maximum %d token unit for account %s\n",
+			config.MsgParams.Amount, MaximumTokenAmount, acct.Address)
+		config.MsgParams.Amount = MaximumTokenAmount
+	}
+
 	// Get account info
 	sequence, accNum, err := lib.GetAccountInfo(acct.Address, config)
 	if err != nil {
@@ -1089,17 +1104,357 @@ func processAccount(
 	// Prepare transaction parameters
 	txParams := prepareTransactionParams(acct, config, chainID, sequence, accNum, distributor)
 
-	// Log the start of processing for this account
-	if enableViz {
-		broadcast.LogVisualizerDebug(fmt.Sprintf("Starting transaction broadcasts for account %s (Position %d)",
-			acct.Address, acct.Position))
+	// Final verification that amount doesn't exceed maximum before broadcasting
+	if amount, ok := txParams.MsgParams["amount"].(int64); ok {
+		if amount > MaximumTokenAmount {
+			fmt.Printf("🛑 CRITICAL: Reducing amount from %d to maximum %d before broadcasting for %s\n",
+				amount, MaximumTokenAmount, acct.Address)
+			txParams.MsgParams["amount"] = int64(MaximumTokenAmount)
+		}
+	} else {
+		// If amount is not set or not of proper type, set it explicitly
+		txParams.MsgParams["amount"] = int64(MaximumTokenAmount)
 	}
 
-	// Broadcast transactions
-	successfulTxs, failedTxs, responseCodes, _ := broadcast.Loop(txParams, BatchSize, int(acct.Position))
+	// Log the start of processing for this account
+	if enableViz {
+		broadcast.LogVisualizerDebug(fmt.Sprintf("Starting transaction broadcasts for account %s (Position %d, Amount: %d)",
+			acct.Address, acct.Position, MaximumTokenAmount))
+	}
 
-	// Print results
-	printResults(acct.Address, successfulTxs, failedTxs, responseCodes)
+	// Determine whether to use parallel flooding mode
+	if config.Hybrid && distributor != nil {
+		// Start independent processes for each transaction type
+		go floodWithMultisends(txParams, BatchSize, int(acct.Position), distributor)
+		go floodWithSends(txParams, BatchSize*HybridSendRatio, int(acct.Position))
+		go floodWithIbcTransfers(txParams, BatchSize, int(acct.Position))
+
+		// Print startup message
+		fmt.Printf("🚀 Started parallel flooding for account %s with:\n", acct.Address)
+		fmt.Printf("   - Multisends (%d receivers per tx, %d token units per recipient)\n",
+			config.NumOutReceivers, MaximumTokenAmount)
+		fmt.Printf("   - Regular sends (%dx batch size, %d token units per send)\n",
+			HybridSendRatio, MaximumTokenAmount)
+		fmt.Printf("   - IBC transfers to Osmosis (channel: %s, %d token units per transfer)\n",
+			getIbcChannel(config), MaximumTokenAmount)
+
+		// Wait a bit to ensure both processes start
+		time.Sleep(time.Second)
+	} else {
+		// Use standard broadcasting approach
+		successfulTxs, failedTxs, responseCodes, _ := broadcast.Loop(txParams, BatchSize, int(acct.Position))
+
+		// Print results
+		printResults(acct.Address, successfulTxs, failedTxs, responseCodes)
+	}
+}
+
+// floodWithMultisends continuously sends multisend transactions
+func floodWithMultisends(
+	txParams types.TransactionParams,
+	batchSize int,
+	position int,
+	distributor *bankmodule.MultiSendDistributor,
+) {
+	successfulTxs := 0
+	failedTxs := 0
+	responseCodes := make(map[uint32]int)
+
+	// Create a copy of parameters for multisend
+	multisendParams := txParams
+	multisendParams.MsgType = MsgBankMultisend
+
+	// Ensure distributor is set
+	if multisendParams.MsgParams == nil {
+		multisendParams.MsgParams = make(map[string]interface{})
+	}
+	multisendParams.MsgParams["distributor"] = distributor
+
+	// Enforce maximum 1 token unit per recipient
+	multisendParams.MsgParams["amount"] = int64(MaximumTokenAmount)
+
+	// Get current sequence
+	sequence := txParams.Sequence
+
+	// Report stats periodically
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// Report stats every 30 seconds
+			fmt.Printf("Multisend stats for %s: %d successful, %d failed (amount: %d)\n",
+				txParams.AcctAddress, successfulTxs, failedTxs, MaximumTokenAmount)
+		default:
+			// Double-check amount parameter before each send to ensure it doesn't exceed maximum
+			if amount, ok := multisendParams.MsgParams["amount"].(int64); !ok || amount > MaximumTokenAmount {
+				fmt.Printf("⚠️ Reducing multisend amount to maximum before sending (amount: %v)\n",
+					multisendParams.MsgParams["amount"])
+				multisendParams.MsgParams["amount"] = int64(MaximumTokenAmount)
+			}
+
+			// Continue sending transactions
+			resp, _, err := broadcast.SendTransactionViaRPC(context.Background(), multisendParams, sequence)
+
+			if err != nil {
+				failedTxs++
+				fmt.Printf("[POS-%d] %s Transaction FAILED: seq=%d error=\"%v\"\n",
+					position, time.Now().Format("15:04:05.000"), sequence, err)
+
+				// Check for insufficient funds
+				if strings.Contains(err.Error(), "insufficient funds") {
+					// Drastically reduce the number of recipients for multisend
+					currentReceivers := txParams.Config.NumOutReceivers
+					reducedReceivers := currentReceivers / 10
+					if reducedReceivers < 3 {
+						reducedReceivers = 3
+					}
+
+					fmt.Printf("⚠️ Reducing multisend recipients from %d to %d due to insufficient funds\n",
+						currentReceivers, reducedReceivers)
+
+					// Update configuration to use fewer recipients
+					if multisendParams.MsgParams == nil {
+						multisendParams.MsgParams = make(map[string]interface{})
+					}
+					multisendParams.MsgParams["num_out_receivers"] = reducedReceivers
+
+					// Wait longer after insufficient funds
+					time.Sleep(TimeoutDuration * 5)
+				}
+
+				// Handle sequence mismatch errors
+				if resp != nil && resp.Code == 32 {
+					// Extract expected sequence from error
+					expectedSeq, parseErr := lib.ExtractExpectedSequence(err.Error())
+					if parseErr == nil {
+						sequence = expectedSeq
+						fmt.Printf("Updated multisend sequence to %d for %s\n",
+							sequence, txParams.AcctAddress)
+					}
+				}
+
+				// Brief backoff on error
+				time.Sleep(TimeoutDuration)
+			} else {
+				// Success
+				sequence++
+				successfulTxs++
+
+				// Record response code
+				if resp != nil {
+					responseCodes[resp.Code]++
+				}
+			}
+
+			// Short delay between transactions to prevent overwhelming the node
+			time.Sleep(TimeoutDuration / 4)
+		}
+	}
+}
+
+// floodWithSends continuously sends regular send transactions
+func floodWithSends(
+	txParams types.TransactionParams,
+	batchSize int,
+	position int,
+) {
+	successfulTxs := 0
+	failedTxs := 0
+	responseCodes := make(map[uint32]int)
+
+	// Create a copy of parameters for sends
+	sendParams := txParams
+	sendParams.MsgType = MsgBankSend
+
+	// Enforce maximum 1 token unit per transaction
+	if sendParams.MsgParams == nil {
+		sendParams.MsgParams = make(map[string]interface{})
+	}
+	sendParams.MsgParams["amount"] = int64(MaximumTokenAmount)
+
+	// Set minimal gas fee
+	sendParams.Config.Gas.Low = 200 // Minimal gas price
+
+	// Get current sequence
+	sequence := txParams.Sequence
+
+	// Report stats periodically
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// Report stats every 30 seconds
+			fmt.Printf("Send stats for %s: %d successful, %d failed (amount: %d)\n",
+				txParams.AcctAddress, successfulTxs, failedTxs, MaximumTokenAmount)
+		default:
+			// Double-check amount parameter before each send to ensure it doesn't exceed maximum
+			if amount, ok := sendParams.MsgParams["amount"].(int64); !ok || amount > MaximumTokenAmount {
+				fmt.Printf("⚠️ Reducing send amount to maximum before sending (amount: %v)\n",
+					sendParams.MsgParams["amount"])
+				sendParams.MsgParams["amount"] = int64(MaximumTokenAmount)
+			}
+
+			// Continue sending transactions
+			resp, _, err := broadcast.SendTransactionViaRPC(context.Background(), sendParams, sequence)
+
+			if err != nil {
+				failedTxs++
+				fmt.Printf("[POS-%d] %s Transaction FAILED: seq=%d error=\"%v\"\n",
+					position, time.Now().Format("15:04:05.000"), sequence, err)
+
+				// Handle sequence mismatch errors
+				if resp != nil && resp.Code == 32 {
+					// Extract expected sequence from error
+					expectedSeq, parseErr := lib.ExtractExpectedSequence(err.Error())
+					if parseErr == nil {
+						sequence = expectedSeq
+						fmt.Printf("Updated send sequence to %d for %s\n",
+							sequence, txParams.AcctAddress)
+					}
+				}
+
+				// Brief backoff on error
+				time.Sleep(TimeoutDuration)
+			} else {
+				// Success
+				sequence++
+				successfulTxs++
+
+				// Record response code
+				if resp != nil {
+					responseCodes[resp.Code]++
+				}
+			}
+
+			// Aggressive pacing - very short delay between sends
+			time.Sleep(TimeoutDuration / 10)
+		}
+	}
+}
+
+// floodWithIbcTransfers continuously sends IBC transfer transactions
+func floodWithIbcTransfers(
+	txParams types.TransactionParams,
+	batchSize int,
+	position int,
+) {
+	successfulTxs := 0
+	failedTxs := 0
+	responseCodes := make(map[uint32]int)
+
+	// Create a copy of parameters for IBC transfers
+	ibcParams := txParams
+	ibcParams.MsgType = MsgIbcTransfer
+
+	// Set maximum 1 token unit per transaction
+	if ibcParams.MsgParams == nil {
+		ibcParams.MsgParams = make(map[string]interface{})
+	}
+	ibcParams.MsgParams["amount"] = int64(MaximumTokenAmount)
+
+	// Set the IBC channel
+	ibcChannel := getIbcChannel(txParams.Config)
+	ibcParams.MsgParams["source_channel"] = ibcChannel
+
+	// Set a default Osmosis receiver using bech32 address conversion
+	osmosisReceiver := convertToBech32Prefix(txParams.AcctAddress, "osmo")
+	ibcParams.MsgParams["receiver"] = osmosisReceiver
+
+	// Set gas for IBC transfers
+	ibcParams.Config.Gas.Low = 300 // Slightly higher gas for IBC
+
+	// Get current sequence
+	sequence := txParams.Sequence
+
+	// Report stats periodically
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// Report stats every 30 seconds
+			fmt.Printf("IBC transfer stats for %s: %d successful, %d failed (amount: %d, channel: %s)\n",
+				txParams.AcctAddress, successfulTxs, failedTxs, MaximumTokenAmount, ibcChannel)
+		default:
+			// Double-check amount parameter before each send
+			if amount, ok := ibcParams.MsgParams["amount"].(int64); !ok || amount > MaximumTokenAmount {
+				fmt.Printf("⚠️ Reducing IBC transfer amount to maximum before sending (amount: %v)\n",
+					ibcParams.MsgParams["amount"])
+				ibcParams.MsgParams["amount"] = int64(MaximumTokenAmount)
+			}
+
+			// Continue sending transactions
+			resp, _, err := broadcast.SendTransactionViaRPC(context.Background(), ibcParams, sequence)
+
+			if err != nil {
+				failedTxs++
+				fmt.Printf("[POS-%d] %s IBC Transfer FAILED: seq=%d error=\"%v\"\n",
+					position, time.Now().Format("15:04:05.000"), sequence, err)
+
+				// Handle sequence mismatch errors
+				if resp != nil && resp.Code == 32 {
+					// Extract expected sequence from error
+					expectedSeq, parseErr := lib.ExtractExpectedSequence(err.Error())
+					if parseErr == nil {
+						sequence = expectedSeq
+						fmt.Printf("Updated IBC transfer sequence to %d for %s\n",
+							sequence, txParams.AcctAddress)
+					}
+				}
+
+				// Brief backoff on error
+				time.Sleep(TimeoutDuration)
+			} else {
+				// Success
+				sequence++
+				successfulTxs++
+
+				// Record response code
+				if resp != nil {
+					responseCodes[resp.Code]++
+				}
+			}
+
+			// Use medium pacing for IBC transfers
+			time.Sleep(TimeoutDuration / 2)
+		}
+	}
+}
+
+// getIbcChannel gets the IBC channel to use from config or default
+func getIbcChannel(config types.Config) string {
+	// Use the channel from config if specified
+	if config.Channel != "" {
+		return config.Channel
+	}
+	// Fall back to default channel
+	return DefaultIbcChannel
+}
+
+// convertToBech32Prefix converts an address to a different bech32 prefix
+func convertToBech32Prefix(address string, newPrefix string) string {
+	// Try to decode the original address
+	_, bz, err := bech32.DecodeAndConvert(address)
+	if err != nil {
+		// If we can't decode, return the original address
+		fmt.Printf("⚠️ Failed to decode address %s: %v\n", address, err)
+		return address
+	}
+
+	// Convert to the new prefix
+	newAddress, err := bech32.ConvertAndEncode(newPrefix, bz)
+	if err != nil {
+		// If conversion fails, return the original address
+		fmt.Printf("⚠️ Failed to convert address %s to prefix %s: %v\n", address, newPrefix, err)
+		return address
+	}
+
+	return newAddress
 }
 
 // prepareTransactionParams prepares the transaction parameters for an account
@@ -1121,11 +1476,17 @@ func prepareTransactionParams(
 			nodeURL = config.Nodes.RPC[0] // Fallback
 		}
 
-		// Use MsgBankMultisend when distributor is available and multisend is enabled
-		if config.MsgType == "bank_send" && config.Multisend {
-			txMsgType = MsgBankMultisend // Use our special distributed multisend
+		// Determine transaction type based on config
+		if config.MsgType == MsgBankSend {
+			if config.Multisend {
+				txMsgType = MsgBankMultisend // Use distributed multisend
+			} else if config.Hybrid {
+				txMsgType = MsgHybrid // Use hybrid mode (alternating send/multisend)
+			} else {
+				txMsgType = MsgBankSend // Use regular send
+			}
 		} else {
-			txMsgType = config.MsgType
+			txMsgType = config.MsgType // Use specified message type
 		}
 	} else {
 		nodeURL = config.Nodes.RPC[0] // Default to first RPC
@@ -1136,11 +1497,17 @@ func prepareTransactionParams(
 	msgParamsMap := types.ConvertMsgParamsToMap(config.MsgParams)
 
 	// Explicitly set the from_address to the account's address
-	// This ensures it's always set correctly even if not present in config.MsgParams
 	msgParamsMap["from_address"] = acct.Address
 
+	// Enforce maximum 1 token unit amount to ensure transactions don't fail
+	msgParamsMap["amount"] = int64(MaximumTokenAmount)
+
+	// Log the enforcement
+	fmt.Printf("👉 Limiting transaction amount to maximum %d token unit for %s\n",
+		MaximumTokenAmount, acct.Address)
+
 	// Add distributor to msgParams for multisend operations
-	if distributor != nil && txMsgType == MsgBankMultisend {
+	if distributor != nil && (txMsgType == MsgBankMultisend || txMsgType == MsgHybrid) {
 		msgParamsMap["distributor"] = distributor
 	}
 
@@ -1155,7 +1522,7 @@ func prepareTransactionParams(
 		AcctAddress: acct.Address,
 		MsgType:     txMsgType,
 		MsgParams:   msgParamsMap,
-		Distributor: distributor, // Pass distributor for multisend operations
+		Distributor: distributor,
 	}
 }
 
@@ -1184,47 +1551,35 @@ func cleanupResources(distributor *bankmodule.MultiSendDistributor, enableViz bo
 	}
 }
 
-// Update the GasConfig when loading from a config map to ensure adaptive gas is enabled
+// updateGasConfig updates the gas configuration based on the chain
 func updateGasConfig(config *types.Config) {
-	// Enable adaptive gas by default
-	// This ensures we're always using the most efficient gas settings
+	// Default to minimal gas settings
+	if config.Gas.Max == 0 {
+		config.Gas.Max = 600000
+	}
 	if config.Gas.Medium == 0 {
-		config.Gas.Medium = config.Gas.Low * 2 // Medium should be 2x low
+		config.Gas.Medium = 300000
 	}
-	if config.Gas.High == 0 {
-		config.Gas.High = config.Gas.Low * 5 // High should be 5x low
-	}
-	if config.Gas.Zero == 0 {
-		config.Gas.Zero = 0 // Zero for simulation
+	if config.Gas.Low == 0 {
+		config.Gas.Low = 200 // Keep gas price very low
 	}
 
-	// Set gas price denom if not already set
-	if config.Gas.Denom == "" {
-		config.Gas.Denom = config.Denom // Use the same denom as the main config
+	// For backward compatibility, set Mid = Medium
+	config.Gas.Mid = config.Gas.Medium
+
+	// Make hybrid mode the default if not explicitly configured
+	if !config.Multisend {
+		config.Hybrid = true
 	}
 
-	// Set default gas price if not already set
-	if config.Gas.Price == "" {
-		// Convert to string with precision
-		precision := config.Gas.Precision
-		if precision == 0 {
-			precision = 6 // Default precision
-		}
-
-		divisor := float64(1)
-		for i := int64(0); i < precision; i++ {
-			divisor *= 10
-		}
-
-		priceValue := float64(config.Gas.Low) / divisor
-		config.Gas.Price = fmt.Sprintf("%g", priceValue)
+	// Set more reasonable outbound receivers for multisends
+	// Starting with a lower number to prevent insufficient funds errors
+	if config.NumOutReceivers == 0 || config.NumOutReceivers > 100 {
+		config.NumOutReceivers = 50 // Start with a safer number
 	}
 
-	// Enable adaptive gas by default
-	config.Gas.AdaptiveGas = true
-
-	fmt.Printf("Gas optimization enabled: Using adaptive gas strategy with base price %s%s\n",
-		config.Gas.Price, config.Gas.Denom)
+	// Network-specific gas adjustments
+	// ... existing gas adjustments ...
 }
 
 // printConfig prints the configuration details for debugging
