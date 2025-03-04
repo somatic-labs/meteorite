@@ -534,13 +534,13 @@ func printAccountInformation(accounts []types.Account, config types.Config) {
 
 // checkAndAdjustBalances checks if balances are within the threshold and adjusts them if needed
 func checkAndAdjustBalances(accounts []types.Account, config types.Config) error {
-	// Get balances and ensure they are within 10% of each other
+	// Get balances and ensure they are within 15% of each other
 	balances, err := lib.GetBalances(accounts, config)
 	if err != nil {
 		return fmt.Errorf("failed to get balances: %v", err)
 	}
 
-	fmt.Println("balances", balances)
+	fmt.Println("Initial balances:", balances)
 
 	// Check if balances need adjustment
 	if lib.CheckBalancesWithinThreshold(balances, 0.15) {
@@ -550,21 +550,53 @@ func checkAndAdjustBalances(accounts []types.Account, config types.Config) error
 
 	fmt.Println("⚠️ Account balances are not within threshold, attempting to adjust...")
 
-	// Attempt to adjust balances
-	if err := adjustBalances(accounts, balances, config); err != nil {
-		return fmt.Errorf("failed to adjust balances: %v", err)
+	// Attempt to adjust balances with up to 3 retries
+	maxRetries := 3
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		fmt.Printf("🔄 Balance adjustment attempt %d of %d\n", attempt, maxRetries)
+
+		// Attempt to adjust balances
+		if err := adjustBalances(accounts, balances, config); err != nil {
+			fmt.Printf("⚠️ Attempt %d failed: %v\n", attempt, err)
+			if attempt == maxRetries {
+				return fmt.Errorf("failed to adjust balances after %d attempts: %v", maxRetries, err)
+			}
+
+			// Wait a bit before the next attempt (backoff)
+			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+
+			// Re-fetch balances before next attempt
+			balances, err = lib.GetBalances(accounts, config)
+			if err != nil {
+				return fmt.Errorf("failed to get balances for retry: %v", err)
+			}
+			continue
+		}
+
+		// If we get here, the adjustment was successful
+		break
 	}
 
 	// Re-fetch balances after adjustment
+	time.Sleep(5 * time.Second) // Give the blockchain time to process the transactions
 	balances, err = lib.GetBalances(accounts, config)
 	if err != nil {
 		return fmt.Errorf("failed to get balances after adjustment: %v", err)
 	}
 
-	if !shouldProceedWithBalances(balances) {
+	fmt.Println("Final balances after adjustment:", balances)
+
+	// Check with a slightly more generous threshold for the final check
+	if !lib.CheckBalancesWithinThreshold(balances, 0.2) {
+		// Fall back to proceeding anyway if the balances haven't balanced perfectly
+		if shouldProceedWithBalances(balances) {
+			fmt.Println("⚠️ Balances not perfectly balanced, but proceeding anyway")
+			return nil
+		}
 		return errors.New("account balances are still not within threshold after adjustment")
 	}
 
+	fmt.Println("✅ Balances successfully adjusted")
 	return nil
 }
 
@@ -925,18 +957,25 @@ func shouldProceedWithBalances(balances map[string]sdkmath.Int) bool {
 		return true
 	}
 
-	if lib.CheckBalancesWithinThreshold(balances, 0.15) {
-		fmt.Println("✅ Balances successfully adjusted within acceptable range")
+	// Use a more generous threshold for the final check
+	if lib.CheckBalancesWithinThreshold(balances, 0.2) {
+		fmt.Println("✅ Balances are within acceptable range (20% threshold)")
 		return true
 	}
 
+	// Calculate a better minimum significant balance based on max balance
 	// Initialize maxBalance to zero
 	maxBalance := sdkmath.ZeroInt()
+	numZeroBalances := 0
+	totalAccounts := 0
 
 	// Find max balance with nil check
 	for _, balance := range balances {
-		// Skip nil balances
-		if balance.IsNil() {
+		totalAccounts++
+
+		// Count zero balances
+		if balance.IsNil() || balance.IsZero() {
+			numZeroBalances++
 			continue
 		}
 
@@ -945,13 +984,41 @@ func shouldProceedWithBalances(balances map[string]sdkmath.Int) bool {
 		}
 	}
 
-	minSignificantBalance := sdkmath.NewInt(1000000)
-	// Handle the case where maxBalance might still be zero
+	// If more than half the accounts have zero balance, that's a problem
+	if numZeroBalances > totalAccounts/2 {
+		fmt.Println("❌ Too many accounts with zero balance, cannot proceed")
+		return false
+	}
+
+	// If max balance is very small, differences don't matter
+	minSignificantBalance := sdkmath.NewInt(1000000) // 1 token assuming 6 decimals
 	if maxBalance.IsZero() || maxBalance.LT(minSignificantBalance) {
-		fmt.Println("✅ Remaining balance differences are below minimum threshold, proceeding")
+		fmt.Println("✅ All balances are below minimum threshold, proceeding")
 		return true
 	}
 
+	// Final fallback: if the max balance is substantial (>= 1 token),
+	// ensure all accounts have at least 10% of the max balance
+	sufficientBalances := true
+	minViableBalance := maxBalance.Quo(sdkmath.NewInt(10)) // 10% of max
+
+	for addr, balance := range balances {
+		if balance.IsNil() || balance.IsZero() {
+			fmt.Printf("⚠️ Account %s has zero balance\n", addr)
+			sufficientBalances = false
+		} else if balance.LT(minViableBalance) {
+			fmt.Printf("⚠️ Account %s has low balance: %s (< 10%% of max)\n", addr, balance.String())
+			sufficientBalances = false
+		}
+	}
+
+	if sufficientBalances {
+		fmt.Println("✅ All accounts have sufficient minimum balance, proceeding")
+		return true
+	}
+
+	// If we got here, balances are not within threshold
+	fmt.Println("❌ Account balances are too imbalanced to proceed")
 	return false
 }
 
