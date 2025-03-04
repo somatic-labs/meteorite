@@ -387,15 +387,15 @@ func GetAccountBalance(address string, config types.Config) (sdkmath.Int, error)
 
 	// Ensure the API URL doesn't end with a trailing slash
 	apiBase := strings.TrimSuffix(config.Nodes.API, "/")
-	apiUrl := apiBase + "/cosmos/bank/v1beta1/balances/" + address
-	log.Printf("Fetching balance from API: %s", apiUrl)
+	apiURL := apiBase + "/cosmos/bank/v1beta1/balances/" + address
+	log.Printf("Fetching balance from API: %s", apiURL)
 
 	// Create a context with timeout for the HTTP request
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Create a request with context
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiUrl, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return sdkmath.ZeroInt(), fmt.Errorf("failed to create request: %w", err)
 	}
@@ -536,7 +536,8 @@ func GetSharedHTTPClient() *http.Client {
 			IdleConnTimeout:     90 * time.Second, // How long connections can remain idle
 			DisableCompression:  false,            // Enable compression
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: false, // Don't skip TLS verification
+				InsecureSkipVerify: false,            // Don't skip TLS verification
+				MinVersion:         tls.VersionTLS12, // Minimum TLS version 1.2
 			},
 		}
 
@@ -582,48 +583,113 @@ func parseAlternativeBalanceFormat(data []byte, targetDenom string) (sdkmath.Int
 	// Look for common patterns in various chain API responses
 	// Try to navigate through nested structures to find balance information
 
-	// Pattern 1: Check for result.coins[] structure
-	if coins, ok := getNestedArray(result, "result", "coins"); ok {
-		for _, coin := range coins {
-			if coinMap, ok := coin.(map[string]interface{}); ok {
-				if denom, ok := coinMap["denom"].(string); ok && denom == targetDenom {
-					if amount, ok := coinMap["amount"].(string); ok {
-						if parsedAmount, ok := sdkmath.NewIntFromString(amount); ok {
-							return parsedAmount, nil
-						}
-					}
-				}
-			}
-		}
+	// Try each pattern in sequence
+	if balance, found := tryCoinsPattern(result, targetDenom); found {
+		return balance, nil
 	}
 
-	// Pattern 2: Check for result.balance structure
-	if balance, ok := getNestedMap(result, "result", "balance"); ok {
-		if denom, ok := balance["denom"].(string); ok && denom == targetDenom {
-			if amount, ok := balance["amount"].(string); ok {
-				if parsedAmount, ok := sdkmath.NewIntFromString(amount); ok {
-					return parsedAmount, nil
-				}
-			}
-		}
+	if balance, found := tryBalancePattern(result, targetDenom); found {
+		return balance, nil
 	}
 
-	// Pattern 3: Check direct balance array
-	if balances, ok := result["balances"].([]interface{}); ok {
-		for _, bal := range balances {
-			if balMap, ok := bal.(map[string]interface{}); ok {
-				if denom, ok := balMap["denom"].(string); ok && denom == targetDenom {
-					if amount, ok := balMap["amount"].(string); ok {
-						if parsedAmount, ok := sdkmath.NewIntFromString(amount); ok {
-							return parsedAmount, nil
-						}
-					}
-				}
-			}
-		}
+	if balance, found := tryBalancesArrayPattern(result, targetDenom); found {
+		return balance, nil
 	}
 
 	return sdkmath.ZeroInt(), errors.New("could not find balance in alternative format")
+}
+
+// tryCoinsPattern tries to extract balance from result.coins[] structure
+func tryCoinsPattern(result map[string]interface{}, targetDenom string) (sdkmath.Int, bool) {
+	coins, ok := getNestedArray(result, "result", "coins")
+	if !ok {
+		return sdkmath.ZeroInt(), false
+	}
+
+	for _, coin := range coins {
+		coinMap, ok := coin.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		denom, ok := coinMap["denom"].(string)
+		if !ok || denom != targetDenom {
+			continue
+		}
+
+		amount, ok := coinMap["amount"].(string)
+		if !ok {
+			continue
+		}
+
+		parsedAmount, ok := sdkmath.NewIntFromString(amount)
+		if !ok {
+			continue
+		}
+
+		return parsedAmount, true
+	}
+
+	return sdkmath.ZeroInt(), false
+}
+
+// tryBalancePattern tries to extract balance from result.balance structure
+func tryBalancePattern(result map[string]interface{}, targetDenom string) (sdkmath.Int, bool) {
+	balance, ok := getNestedMap(result, "result", "balance")
+	if !ok {
+		return sdkmath.ZeroInt(), false
+	}
+
+	denom, ok := balance["denom"].(string)
+	if !ok || denom != targetDenom {
+		return sdkmath.ZeroInt(), false
+	}
+
+	amount, ok := balance["amount"].(string)
+	if !ok {
+		return sdkmath.ZeroInt(), false
+	}
+
+	parsedAmount, ok := sdkmath.NewIntFromString(amount)
+	if !ok {
+		return sdkmath.ZeroInt(), false
+	}
+
+	return parsedAmount, true
+}
+
+// tryBalancesArrayPattern tries to extract balance from balances array
+func tryBalancesArrayPattern(result map[string]interface{}, targetDenom string) (sdkmath.Int, bool) {
+	balances, ok := result["balances"].([]interface{})
+	if !ok {
+		return sdkmath.ZeroInt(), false
+	}
+
+	for _, bal := range balances {
+		balMap, ok := bal.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		denom, ok := balMap["denom"].(string)
+		if !ok || denom != targetDenom {
+			continue
+		}
+
+		amount, ok := balMap["amount"].(string)
+		if !ok {
+			continue
+		}
+
+		parsedAmount, ok := sdkmath.NewIntFromString(amount)
+		if !ok {
+			continue
+		}
+
+		return parsedAmount, true
+	}
+
+	return sdkmath.ZeroInt(), false
 }
 
 // Helper function to safely navigate nested maps

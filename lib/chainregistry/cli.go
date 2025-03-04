@@ -190,128 +190,25 @@ func GenerateConfigFromChain(selection *ChainSelection) (map[string]interface{},
 	}
 
 	if len(selection.OpenEndpoints) > 0 {
-		// For API, use REST endpoints from the chain registry directly
-		var apiBase string
-		var verified bool
-
-		// Create a new function to check all endpoints concurrently
-		verifyAPIEndpointsConcurrently := func(endpoints []APIEndpoint) string {
-			fmt.Printf("Testing %d endpoints concurrently...\n", len(endpoints))
-
-			var wg sync.WaitGroup
-			var mutex sync.Mutex
-			var firstVerifiedEndpoint string
-			var endpointFound bool
-
-			// Create a channel to signal when the first endpoint is found
-			foundSignal := make(chan struct{})
-
-			for _, endpoint := range endpoints {
-				wg.Add(1)
-				go func(apiURL string) {
-					defer wg.Done()
-
-					// Skip if we already found a working endpoint
-					select {
-					case <-foundSignal:
-						return
-					default:
-						// Continue checking
-					}
-
-					// Ensure the API endpoint doesn't end with a trailing slash
-					apiURL = strings.TrimSuffix(apiURL, "/")
-
-					if verifyAPIEndpoint(apiURL) {
-						mutex.Lock()
-						if !endpointFound {
-							endpointFound = true
-							firstVerifiedEndpoint = apiURL
-							close(foundSignal) // Signal that we found an endpoint
-							fmt.Printf("✅ Using verified endpoint: %s\n", apiURL)
-						}
-						mutex.Unlock()
-					}
-				}(endpoint.Address)
-			}
-
-			// Wait for all goroutines to finish
-			wg.Wait()
-
-			return firstVerifiedEndpoint
-		}
-
-		// Check REST endpoints concurrently
-		if len(chain.APIs.Rest) > 0 {
-			fmt.Println("Testing REST endpoints from chain registry concurrently...")
-			if verifiedEndpoint := verifyAPIEndpointsConcurrently(chain.APIs.Rest); verifiedEndpoint != "" {
-				apiBase = verifiedEndpoint
-				verified = true
-			}
-		}
-
-		// If no REST endpoint worked, try API endpoints concurrently
-		if !verified && len(chain.APIs.API) > 0 {
-			fmt.Println("Testing API endpoints from chain registry concurrently...")
-			if verifiedEndpoint := verifyAPIEndpointsConcurrently(chain.APIs.API); verifiedEndpoint != "" {
-				apiBase = verifiedEndpoint
-				verified = true
-			}
-		}
-
-		// Last resort: try to derive from RPC if no registry endpoints worked
-		if !verified {
-			fmt.Println("⚠️ Warning: No valid REST or API endpoints found in registry. Trying to derive from RPC...")
-			// Create a slice of derived endpoints
-			derivedEndpoints := make([]APIEndpoint, len(selection.OpenEndpoints))
-			for i, rpcBase := range selection.OpenEndpoints {
-				// Convert RPC to API (assumed to be on port 1317)
-				apiURL := strings.ReplaceAll(rpcBase, "26657", "1317")
-				apiURL = strings.ReplaceAll(apiURL, "/rpc", "/rest")
-				derivedEndpoints[i] = APIEndpoint{Address: apiURL}
-			}
-
-			if verifiedEndpoint := verifyAPIEndpointsConcurrently(derivedEndpoints); verifiedEndpoint != "" {
-				apiBase = verifiedEndpoint
-				verified = true
-			}
-		}
-
-		if !verified {
-			fmt.Println("⚠️ Warning: Could not verify any API endpoint. Using first REST endpoint from registry (if available) but balance queries may fail.")
-			// Use the first REST endpoint from registry as a fallback if available
-			if len(chain.APIs.Rest) > 0 {
-				apiBase = strings.TrimSuffix(chain.APIs.Rest[0].Address, "/")
-			} else if len(chain.APIs.API) > 0 {
-				apiBase = strings.TrimSuffix(chain.APIs.API[0].Address, "/")
-			} else if len(selection.OpenEndpoints) > 0 {
-				// Fallback to derived endpoint from RPC
-				rpcBase := selection.OpenEndpoints[0]
-				apiBase = strings.ReplaceAll(rpcBase, "26657", "1317")
-				apiBase = strings.ReplaceAll(apiBase, "/rpc", "/rest")
-				apiBase = strings.TrimSuffix(apiBase, "/")
-			}
-		}
-
-		nodes["api"] = apiBase
-
-		// For GRPC, try to use endpoints from the registry first
-		var grpcBase string
-		if len(chain.APIs.GRPC) > 0 {
-			grpcBase = chain.APIs.GRPC[0].Address
-			// Strip protocol if present, as it's not used in the GRPC URL
-			grpcBase = strings.ReplaceAll(grpcBase, "http://", "")
-			grpcBase = strings.ReplaceAll(grpcBase, "https://", "")
-		} else {
-			// Fallback to derived GRPC from RPC
-			rpcBase := selection.OpenEndpoints[0] // Use first endpoint for GRPC
-			grpcBase = strings.ReplaceAll(rpcBase, "26657", "9090")
-			grpcBase = strings.ReplaceAll(grpcBase, "http://", "")
-			grpcBase = strings.ReplaceAll(grpcBase, "https://", "")
-			grpcBase = strings.ReplaceAll(grpcBase, "/rpc", "")
-		}
-		nodes["grpc"] = grpcBase
+		return configureNodeEndpoints(selection, chain)
 	}
+
+	// For GRPC, try to use endpoints from the registry first
+	var grpcBase string
+	if len(chain.APIs.GRPC) > 0 {
+		grpcBase = chain.APIs.GRPC[0].Address
+		// Strip protocol if present, as it's not used in the GRPC URL
+		grpcBase = strings.ReplaceAll(grpcBase, "http://", "")
+		grpcBase = strings.ReplaceAll(grpcBase, "https://", "")
+	} else {
+		// Fallback to derived GRPC from RPC
+		rpcBase := selection.OpenEndpoints[0] // Use first endpoint for GRPC
+		grpcBase = strings.ReplaceAll(rpcBase, "26657", "9090")
+		grpcBase = strings.ReplaceAll(grpcBase, "http://", "")
+		grpcBase = strings.ReplaceAll(grpcBase, "https://", "")
+		grpcBase = strings.ReplaceAll(grpcBase, "/rpc", "")
+	}
+	nodes["grpc"] = grpcBase
 
 	config["nodes"] = nodes
 
@@ -367,7 +264,10 @@ func verifyAPIEndpoint(apiURL string) bool {
 	client := &http.Client{
 		Timeout: 6 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: false,
+				MinVersion:         tls.VersionTLS12, // Minimum TLS version 1.2
+			},
 			MaxIdleConns:    10,
 			IdleConnTimeout: 30 * time.Second,
 		},
@@ -412,16 +312,16 @@ func verifyAPIEndpoint(apiURL string) bool {
 			fmt.Printf("✅ API endpoint verified: %s (%.2fs)\n", apiURL, requestDuration.Seconds())
 			cacheResult(apiURL, true)
 			return true
-		} else {
-			fmt.Printf("⚠️ API endpoint response is not valid JSON: %s\n", apiURL)
-			fmt.Printf("Response first 100 bytes: %s\n", string(body[:min(100, n)]))
-			cacheResult(apiURL, false)
-			return false
 		}
+
+		fmt.Printf("⚠️ API endpoint response is not valid JSON: %s\n", apiURL)
+		fmt.Printf("Response first 100 bytes: %s\n", string(body[:minInt(100, n)]))
+		cacheResult(apiURL, false)
+		return false
 	}
 
 	fmt.Printf("⚠️ API endpoint response doesn't appear to be JSON: %s\n", apiURL)
-	fmt.Printf("Response first 100 bytes: %s\n", string(body[:min(100, n)]))
+	fmt.Printf("Response first 100 bytes: %s\n", string(body[:minInt(100, n)]))
 	cacheResult(apiURL, false)
 	return false
 }
@@ -433,8 +333,8 @@ func cacheResult(apiURL string, result bool) {
 	verificationCache[apiURL] = result
 }
 
-// Helper function to get the minimum of two integers
-func min(a, b int) int {
+// minInt returns the minimum of two integers
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}
@@ -468,13 +368,146 @@ func determineSlip44(chainName, prefix string) int {
 		return coinType
 	}
 
-	// Check if chain name contains a known prefix
-	for knownPrefix, coinType := range prefixMap {
-		if strings.Contains(chainName, knownPrefix) {
-			return coinType
-		}
+	// Check if chain name contains a known prefix using a switch pattern
+	switch {
+	case strings.Contains(chainName, "cosmos"):
+		return 118
+	case strings.Contains(chainName, "osmo"):
+		return 118
+	case strings.Contains(chainName, "juno"):
+		return 118
+	case strings.Contains(chainName, "evmos"):
+		return 60
+	case strings.Contains(chainName, "injective"):
+		return 60
+	case strings.Contains(chainName, "secret"):
+		return 529
+	// Chains using standard Cosmos coin type 118
+	case strings.Contains(chainName, "atone"),
+		strings.Contains(chainName, "sei"),
+		strings.Contains(chainName, "akash"),
+		strings.Contains(chainName, "regen"),
+		strings.Contains(chainName, "stargaze"),
+		strings.Contains(chainName, "umee"),
+		strings.Contains(chainName, "kujira"),
+		strings.Contains(chainName, "neutron"),
+		strings.Contains(chainName, "dydx"),
+		strings.Contains(chainName, "mantra"):
+		return 118
 	}
 
 	// Default to Cosmos coin type (118) for unknown chains
 	return 118
+}
+
+// configureNodeEndpoints configures API, GRPC and other endpoints using the available open endpoints
+func configureNodeEndpoints(selection *ChainSelection, chain *Chain) (map[string]interface{}, error) {
+	// For API, use REST endpoints from the chain registry directly
+	var apiBase string
+	var verified bool
+
+	// Create a new function to check all endpoints concurrently
+	verifyAPIEndpointsConcurrently := func(endpoints []APIEndpoint) string {
+		fmt.Printf("Testing %d endpoints concurrently...\n", len(endpoints))
+
+		// Create a channel for results
+		results := make(chan string, len(endpoints))
+		var wg sync.WaitGroup
+
+		// Test each endpoint concurrently
+		for _, endpoint := range endpoints {
+			wg.Add(1)
+			go func(e APIEndpoint) {
+				defer wg.Done()
+				endpointURL := strings.TrimSuffix(e.Address, "/")
+				if verifyAPIEndpoint(endpointURL) {
+					results <- endpointURL
+				}
+			}(endpoint)
+		}
+
+		// Wait for all endpoint checks to complete
+		wg.Wait()
+		close(results)
+
+		// Return the first verified endpoint, if any
+		for r := range results {
+			return r
+		}
+		return ""
+	}
+
+	// Try to verify REST endpoints from registry
+	if len(chain.APIs.Rest) > 0 {
+		fmt.Println("Verifying REST endpoints from chain registry...")
+		apiBase = verifyAPIEndpointsConcurrently(chain.APIs.Rest)
+		verified = apiBase != ""
+	}
+
+	// If REST endpoints failed, try API endpoints
+	if !verified && len(chain.APIs.API) > 0 {
+		fmt.Println("Verifying API endpoints from chain registry...")
+		apiBase = verifyAPIEndpointsConcurrently(chain.APIs.API)
+		verified = apiBase != ""
+	}
+
+	// If both failed, derive an endpoint from the RPC nodes
+	if !verified {
+		fmt.Println("⚠️ Warning: Could not verify any API endpoint. Using first REST endpoint from registry (if available) but balance queries may fail.")
+		// Use a fallback endpoint from available options
+		switch {
+		case len(chain.APIs.Rest) > 0:
+			apiBase = strings.TrimSuffix(chain.APIs.Rest[0].Address, "/")
+		case len(chain.APIs.API) > 0:
+			apiBase = strings.TrimSuffix(chain.APIs.API[0].Address, "/")
+		case len(selection.OpenEndpoints) > 0:
+			// Fallback to derived endpoint from RPC
+			rpcBase := selection.OpenEndpoints[0]
+			apiBase = strings.ReplaceAll(rpcBase, "26657", "1317")
+			apiBase = strings.ReplaceAll(apiBase, "/rpc", "/rest")
+			apiBase = strings.TrimSuffix(apiBase, "/")
+		}
+	}
+
+	// Configure nodes
+	nodes := map[string]interface{}{
+		"rpc": selection.OpenEndpoints,
+		"api": apiBase,
+	}
+
+	// For GRPC, try to use endpoints from the registry first
+	var grpcBase string
+	if len(chain.APIs.GRPC) > 0 {
+		grpcBase = strings.TrimSuffix(chain.APIs.GRPC[0].Address, "/")
+	} else {
+		// Fallback to derived endpoint from RPC
+		grpcBase = strings.ReplaceAll(selection.OpenEndpoints[0], "26657", "9090")
+		grpcBase = strings.ReplaceAll(grpcBase, "http://", "")
+		grpcBase = strings.TrimSuffix(grpcBase, "/")
+	}
+	nodes["grpc"] = grpcBase
+
+	// Build configuration
+	config := map[string]interface{}{
+		"chain":     chain.ChainName,
+		"prefix":    chain.Bech32Prefix,
+		"denom":     chain.Fees.FeeTokens[0].Denom,
+		"slip44":    determineSlip44(chain.ChainName, chain.Bech32Prefix),
+		"positions": 10, // A reasonable default number of accounts
+		"msg_type":  "bank_send",
+		"nodes":     nodes,
+	}
+
+	// Add gas configuration based on minimum gas price from chain
+	fixedMinGasPrice := int64(1) // Default fallback
+	if len(chain.Fees.FeeTokens) > 0 && chain.Fees.FeeTokens[0].FixedMinGasPrice > 0 {
+		fixedMinGasPrice = int64(chain.Fees.FeeTokens[0].FixedMinGasPrice)
+	}
+
+	config["gas"] = map[string]interface{}{
+		"low":       fixedMinGasPrice,
+		"precision": 3,
+	}
+
+	return config, nil
 }
