@@ -2,6 +2,7 @@ package broadcast
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -589,19 +590,19 @@ func calculateInitialFee(gasLimit uint64, gasPrice int64) int64 {
 	return feeAmount
 }
 
-// Modify BuildAndSignTransaction to properly use node-specific settings
+// BuildAndSignTransaction builds and signs a transaction with proper error handling
 func BuildAndSignTransaction(
 	ctx context.Context,
 	txParams types.TransactionParams,
 	sequence uint64,
 	_ interface{},
 ) ([]byte, error) {
-	// First, check if we have more up-to-date sequence info for this node
+	// First, check if we have more up-to-date sequence info for this node from previous errors
 	nodeSettings := getNodeSettings(txParams.NodeURL)
 	nodeSettings.mutex.RLock()
 	if nodeSettings.LastSequence > sequence {
-		// Log that we're using the cached sequence instead of the provided one
-		fmt.Printf("Using cached sequence %d instead of provided %d for node %s\n",
+		// Log that we're using the cached sequence from previous error responses
+		fmt.Printf("Using cached sequence %d instead of provided %d for node %s (from previous tx errors)\n",
 			nodeSettings.LastSequence, sequence, txParams.NodeURL)
 		sequence = nodeSettings.LastSequence
 	}
@@ -694,19 +695,27 @@ func BuildAndSignTransaction(
 	}
 	nodeSettings.mutex.RUnlock()
 
-	// Ensure fee is at least the minimum required and proportional to the gas used
-	if gasPrice > 0 {
-		// For large multisend transactions, ensure the fee is proportionally higher
-		if txParams.MsgType == "bank_multisend" && gasLimit > 100000 {
-			minFee := gasLimit / 10000 // Much higher minimum fee for large multisends
-			if feeAmount < int64(minFee) {
-				feeAmount = int64(minFee)
-			}
-		} else if feeAmount < 200 {
-			// For regular transactions, minimum 200 tokens as fee
-			feeAmount = 200
+	// Apply a more aggressive minimum fee strategy to prevent "insufficient fees" errors
+	// For nodes that have previously returned fee errors, add a buffer
+	baseFeeThreshold := int64(200)
+
+	// For large multisend transactions, ensure the fee is proportionally higher
+	if txParams.MsgType == "bank_multisend" && gasLimit > 100000 {
+		// Much higher minimum fee for large multisends - use gas-based calculation
+		minFee := int64(gasLimit) / 5000 // More aggressive scaling (changed from 10000)
+		if feeAmount < minFee {
+			feeAmount = minFee
+			fmt.Printf("Increasing multisend fee to %d based on gas usage\n", feeAmount)
 		}
+	} else if gasPrice > 0 && feeAmount < baseFeeThreshold {
+		// For regular transactions, use higher minimum fee
+		feeAmount = baseFeeThreshold
+		fmt.Printf("Using minimum fee threshold of %d\n", feeAmount)
 	}
+
+	// Apply additional node-specific fee buffer based on historical errors
+	// This helps prevent fee errors on chains that are sensitive to fee amounts
+	feeAmount = applyNodeFeeBuffer(txParams.NodeURL, txParams.Config.Denom, feeAmount)
 
 	feeCoin := fmt.Sprintf("%d%s", feeAmount, txParams.Config.Denom)
 	fee, err := sdk.ParseCoinsNormalized(feeCoin)
@@ -714,21 +723,37 @@ func BuildAndSignTransaction(
 		return nil, fmt.Errorf("failed to parse fee: %w", err)
 	}
 
-	fmt.Printf("Setting transaction fee: %s (gas limit: %d, gas price: %d)\n",
-		fee.String(), gasLimit, gasPrice)
+	fmt.Printf("Setting transaction fee: %s (gas limit: %d, gas price: %d) for node %s\n",
+		fee.String(), gasLimit, gasPrice, txParams.NodeURL)
 	txBuilder.SetFeeAmount(fee)
 
 	// Set memo if provided
 	txBuilder.SetMemo("")
 
-	// Get account number
+	// Get account number - this is still needed, but we won't use its sequence
 	accNum := txParams.AccNum
-
-	// Get account information for the transaction signer
 	fromAddress, _ := txParams.MsgParams["from_address"].(string)
-	accNum, _, err = GetAccountInfo(ctx, clientCtx, fromAddress)
+
+	// We only need account number from GetAccountInfo, NOT the sequence
+	// The sequence we use should be from our tracking system, which considers mempool state
+	fetchedAccNum, stateSequence, err := GetAccountInfo(ctx, clientCtx, fromAddress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get account info: %w", err)
+	}
+
+	// Use the fetched account number
+	accNum = fetchedAccNum
+
+	// Only log the state sequence for debugging, but don't use it directly
+	// This helps us understand discrepancies between state and our tracked sequences
+	fmt.Printf("Node %s reports state sequence %d, using tracked sequence %d\n",
+		txParams.NodeURL, stateSequence, sequence)
+
+	// If we have no better information (first tx to this node), then use state sequence
+	if sequence == 0 {
+		sequence = stateSequence
+		fmt.Printf("First transaction to node %s, using state sequence: %d\n", txParams.NodeURL, sequence)
+		updateSequence(txParams.NodeURL, sequence)
 	}
 
 	// Set up signature
@@ -775,69 +800,239 @@ func BuildAndSignTransaction(
 		return nil, fmt.Errorf("failed to encode transaction: %w", err)
 	}
 
-	// Add error handling for insufficient fees and sequence mismatch
-	if err != nil {
-		// Check for insufficient fees error
-		insufficientFeesRegex := regexp.MustCompile(insufficientFeesPattern)
-		if matches := insufficientFeesRegex.FindStringSubmatch(err.Error()); len(matches) > 1 {
-			requiredFee, _ := strconv.ParseUint(matches[1], 10, 64)
-			updateMinimumFee(txParams.NodeURL, txParams.Config.Denom, requiredFee)
-			fmt.Printf("Fee adjustment: Retry with fee %d%s\n", requiredFee, txParams.Config.Denom)
-
-			// Retry with correct fee
-			txBuilder.SetFeeAmount(sdk.NewCoins(sdk.NewCoin(txParams.Config.Denom, sdkmath.NewInt(int64(requiredFee)))))
-
-			// Rebuild and sign with new fee
-			return finalizeTx(ctx, clientCtx, txBuilder, txParams, sequence)
-		}
-
-		// Check for sequence mismatch error
-		sequenceRegex := regexp.MustCompile(sequenceMismatchPattern)
-		if matches := sequenceRegex.FindStringSubmatch(err.Error()); len(matches) > 1 {
-			correctSeq, _ := strconv.ParseUint(matches[1], 10, 64)
-			updateSequence(txParams.NodeURL, correctSeq)
-			fmt.Printf("Sequence adjustment: Using correct sequence %d instead of %d\n", correctSeq, sequence)
-
-			// Retry with correct sequence
-			return BuildAndSignTransaction(ctx, txParams, correctSeq, nil)
-		}
-	}
-
 	// If successful, update our node sequence cache preemptively
 	// This helps avoid sequence errors on subsequent transactions to the same node
 	updateSequence(txParams.NodeURL, sequence+1)
 
-	return txBytes, err
+	return txBytes, nil
 }
 
-// Add this helper function to finalize transaction
-func finalizeTx(
+// Helper function to apply additional fee buffer based on node history
+func applyNodeFeeBuffer(nodeURL, denom string, baseFee int64) int64 {
+	// Get node settings
+	nodeSettings := getNodeSettings(nodeURL)
+	nodeSettings.mutex.RLock()
+	defer nodeSettings.mutex.RUnlock()
+
+	// Default buffer is 10%
+	buffer := 1.1
+
+	// If we've had fee errors from this node before, use a more aggressive buffer
+	if minFee, exists := nodeSettings.MinimumFees[denom]; exists && minFee > 0 {
+		// Apply a 20% buffer over the known minimum
+		buffer = 1.2
+
+		// Ensure we're at least meeting the known minimum fee (with buffer)
+		minWithBuffer := int64(float64(minFee) * buffer)
+		if baseFee < minWithBuffer {
+			fmt.Printf("Applying %d%% buffer to node %s minimum fee (%d → %d)\n",
+				int((buffer-1.0)*100), nodeURL, minFee, minWithBuffer)
+			return minWithBuffer
+		}
+	}
+
+	// Apply the buffer to the base fee
+	return int64(float64(baseFee) * buffer)
+}
+
+// ProcessBroadcastResponse processes the response from a transaction broadcast
+// and updates node-specific settings based on errors
+func ProcessBroadcastResponse(nodeURL, denom string, sequence uint64, respBytes []byte) {
+	// Check if there's an error response to parse
+	if len(respBytes) == 0 {
+		return
+	}
+
+	respStr := string(respBytes)
+
+	// Check for common error patterns in the response
+
+	// 1. Check for sequence mismatch errors
+	sequenceRegex := regexp.MustCompile(sequenceMismatchPattern)
+	if matches := sequenceRegex.FindStringSubmatch(respStr); len(matches) > 1 {
+		correctSeq, _ := strconv.ParseUint(matches[1], 10, 64)
+
+		// Update our sequence tracking with the correct mempool sequence
+		updateSequence(nodeURL, correctSeq)
+		fmt.Printf("MEMPOOL SYNC - Updated sequence for %s: %d (was: %d)\n",
+			nodeURL, correctSeq, sequence)
+
+		// Return early since this is a critical error to fix
+		return
+	}
+
+	// 2. Check for insufficient fees errors
+	insufficientFeesRegex := regexp.MustCompile(insufficientFeesPattern)
+	if matches := insufficientFeesRegex.FindStringSubmatch(respStr); len(matches) > 1 {
+		requiredFee, _ := strconv.ParseUint(matches[1], 10, 64)
+
+		// Add a 20% buffer to the required fee to avoid borderline cases
+		bufferedFee := uint64(float64(requiredFee) * 1.2)
+
+		// Update minimum fee for this node
+		updateMinimumFee(nodeURL, denom, bufferedFee)
+		fmt.Printf("FEE ADJUSTMENT - Node %s requires minimum %d %s, storing %d with buffer\n",
+			nodeURL, requiredFee, denom, bufferedFee)
+
+		return
+	}
+
+	// If we got here and there's an "out of gas" error, update gas requirements
+	if strings.Contains(respStr, "out of gas") {
+		// This error handling would update gas strategy, but that's handled elsewhere
+		fmt.Printf("GAS ERROR detected for node %s - Consider increasing gas limits\n", nodeURL)
+		return
+	}
+
+	// If no errors found, this was likely a successful transaction
+	// We can simply rely on the preemptive sequence update in BuildAndSignTransaction
+}
+
+// BroadcastTxSync is a wrapper around the standard broadcast that includes error processing
+func BroadcastTxSync(ctx context.Context, clientCtx sdkclient.Context, txBytes []byte, nodeURL, denom string, sequence uint64) (*sdk.TxResponse, error) {
+	resp, err := clientCtx.BroadcastTxSync(txBytes)
+
+	// Process broadcast response for errors to update our node-specific tracking
+	// We do this regardless of whether the broadcast itself returned an error
+	if resp != nil {
+		// Marshal response to bytes for processing
+		respBytes, _ := json.Marshal(resp)
+		ProcessBroadcastResponse(nodeURL, denom, sequence, respBytes)
+	} else if err != nil {
+		// If we have an error but no response, process the error string
+		ProcessBroadcastResponse(nodeURL, denom, sequence, []byte(err.Error()))
+	}
+
+	return resp, err
+}
+
+// BroadcastTxAsync is a wrapper around the standard broadcast that includes error processing
+func BroadcastTxAsync(ctx context.Context, clientCtx sdkclient.Context, txBytes []byte, nodeURL, denom string, sequence uint64) (*sdk.TxResponse, error) {
+	resp, err := clientCtx.BroadcastTxAsync(txBytes)
+
+	// Process broadcast response for errors to update our node-specific tracking
+	if resp != nil {
+		respBytes, _ := json.Marshal(resp)
+		ProcessBroadcastResponse(nodeURL, denom, sequence, respBytes)
+	} else if err != nil {
+		ProcessBroadcastResponse(nodeURL, denom, sequence, []byte(err.Error()))
+	}
+
+	return resp, err
+}
+
+// BroadcastTxBlock is a wrapper around block/commit broadcast that includes error processing
+func BroadcastTxBlock(ctx context.Context, clientCtx sdkclient.Context, txBytes []byte, nodeURL, denom string, sequence uint64) (*sdk.TxResponse, error) {
+	// In newer versions of the SDK, BroadcastTxCommit is not directly available on clientCtx
+	// Instead, we use the general BroadcastTx method with the appropriate mode
+	resp, err := clientCtx.BroadcastTx(txBytes)
+
+	// Process broadcast response for errors to update our node-specific tracking
+	if resp != nil {
+		respBytes, _ := json.Marshal(resp)
+		ProcessBroadcastResponse(nodeURL, denom, sequence, respBytes)
+	} else if err != nil {
+		ProcessBroadcastResponse(nodeURL, denom, sequence, []byte(err.Error()))
+	}
+
+	return resp, err
+}
+
+// BroadcastTx broadcasts a transaction and handles errors
+func BroadcastTx(
 	ctx context.Context,
 	clientCtx sdkclient.Context,
-	txBuilder sdkclient.TxBuilder,
+	txBytes []byte,
 	txParams types.TransactionParams,
 	sequence uint64,
-) ([]byte, error) {
-	sigV2, err := tx.SignWithPrivKey(
-		ctx,
-		signing.SignMode_SIGN_MODE_DIRECT,
-		xauthsigning.SignerData{
-			ChainID:       txParams.ChainID,
-			AccountNumber: txParams.AccNum,
-			Sequence:      sequence,
-		},
-		txBuilder,
-		txParams.PrivKey,
-		clientCtx.TxConfig,
-		sequence,
-	)
+	broadcast string,
+) (*sdk.TxResponse, error) {
+	var resp *sdk.TxResponse
+	var err error
+
+	// Use our custom wrappers that include error tracking
+	switch broadcast {
+	case "sync":
+		resp, err = BroadcastTxSync(ctx, clientCtx, txBytes, txParams.NodeURL, txParams.Config.Denom, sequence)
+	case "async":
+		resp, err = BroadcastTxAsync(ctx, clientCtx, txBytes, txParams.NodeURL, txParams.Config.Denom, sequence)
+	case "block":
+		// For commit/block mode, use our wrapper
+		resp, err = BroadcastTxBlock(ctx, clientCtx, txBytes, txParams.NodeURL, txParams.Config.Denom, sequence)
+	default:
+		// Default to sync mode
+		resp, err = BroadcastTxSync(ctx, clientCtx, txBytes, txParams.NodeURL, txParams.Config.Denom, sequence)
+	}
+
+	// Further process the response regardless of error status
+	ProcessTxBroadcastResult(resp, err, txParams.NodeURL, sequence)
+
+	return resp, err
+}
+
+// ProcessTxBroadcastResult processes a transaction broadcast result and returns a custom response
+func ProcessTxBroadcastResult(txResponse *sdk.TxResponse, err error, nodeURL string, sequence uint64) {
+	// Check if we have a response code indicating error
+	if txResponse != nil && txResponse.Code != 0 {
+		// Process the error log to update our node tracking
+		if txResponse.RawLog != "" {
+			// Handle specific error cases
+			ProcessBroadcastResponse(nodeURL, "", sequence, []byte(txResponse.RawLog))
+		}
+	}
+}
+
+// SendTx is a high-level function that builds, signs, and broadcasts a transaction
+func SendTx(
+	ctx context.Context,
+	txParams types.TransactionParams,
+	sequence uint64,
+	broadcastMode string,
+) (*sdk.TxResponse, error) {
+	// Build and sign the transaction
+	txBytes, err := BuildAndSignTransaction(ctx, txParams, sequence, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to sign transaction: %w", err)
+		return nil, fmt.Errorf("failed to build and sign transaction: %w", err)
 	}
 
-	if err := txBuilder.SetSignatures(sigV2); err != nil {
-		return nil, fmt.Errorf("failed to set signatures: %w", err)
+	// Get client context for broadcast
+	clientCtx, err := GetClientContext(txParams.Config, txParams.NodeURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get client context: %w", err)
 	}
 
-	return clientCtx.TxConfig.TxEncoder()(txBuilder.GetTx())
+	// Broadcast using our wrapper functions to ensure sequence & fee tracking
+	resp, err := BroadcastTx(ctx, clientCtx, txBytes, txParams, sequence, broadcastMode)
+	if err != nil {
+		// Check if it's a sequence or fee error that we can recover from
+		if strings.Contains(err.Error(), "account sequence mismatch") ||
+			strings.Contains(err.Error(), "insufficient fees") {
+			// Log retry attempt
+			fmt.Printf("Retrying transaction due to recoverable error: %v\n", err)
+
+			// Get updated sequence from error if possible
+			// This is a fallback - our ProcessBroadcastResponse should already have updated the sequence
+			correctSeq := sequence
+			seqRegex := regexp.MustCompile(sequenceMismatchPattern)
+			if matches := seqRegex.FindStringSubmatch(err.Error()); len(matches) > 1 {
+				correctSeq, _ = strconv.ParseUint(matches[1], 10, 64)
+			} else {
+				// If we couldn't extract sequence from error, use our cached sequence
+				nodeSettings := getNodeSettings(txParams.NodeURL)
+				nodeSettings.mutex.RLock()
+				if nodeSettings.LastSequence > sequence {
+					correctSeq = nodeSettings.LastSequence
+				}
+				nodeSettings.mutex.RUnlock()
+			}
+
+			// Try one more time with corrected sequence
+			return SendTx(ctx, txParams, correctSeq, broadcastMode)
+		}
+
+		// Not a recoverable error, return it
+		return resp, err
+	}
+
+	return resp, nil
 }
