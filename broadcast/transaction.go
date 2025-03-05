@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -23,7 +24,11 @@ import (
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 )
 
+// Msg types
 const (
+	MsgTypeBankSend      = "bank_send"
+	MsgTypeBankMultisend = "bank_multisend"
+
 	// Safety buffer percentage for gas estimation
 	defaultGasAdjustment = 1.3
 
@@ -131,33 +136,62 @@ func createBankSendMsg(txParams *types.TxParams) (sdk.Msg, error) {
 }
 
 // createMultiSendMsg creates a bank multisend message from the provided parameters
-func createMultiSendMsg(txParams *types.TxParams) (sdk.Msg, error) {
-	// Implementation not needed as we're using the distributor
-	return nil, errors.New("basic multisend not implemented - use distributor instead")
+func createMultiSendMsg(_ *types.TxParams) (sdk.Msg, error) {
+	// TODO: implement multisend message creation
+	return nil, errors.New("multisend not implemented yet")
 }
 
 // createIbcTransferMsg creates an IBC transfer message
-func createIbcTransferMsg(txParams *types.TxParams) (sdk.Msg, error) {
-	// Just a stub for now
-	return nil, errors.New("ibc_transfer not implemented")
+func createIbcTransferMsg(_ *types.TxParams) (sdk.Msg, error) {
+	// TODO: implement IBC transfer message creation
+	return nil, errors.New("IBC transfer not implemented yet")
 }
 
 // createStoreCodeMsg creates a store code message for CosmWasm
-func createStoreCodeMsg(txParams *types.TxParams) (sdk.Msg, error) {
-	// Just a stub for now
-	return nil, errors.New("store_code not implemented")
+func createStoreCodeMsg(_ *types.TxParams) (sdk.Msg, error) {
+	// TODO: implement store code message creation
+	return nil, errors.New("store code not implemented yet")
 }
 
 // createInstantiateContractMsg creates an instantiate contract message for CosmWasm
-func createInstantiateContractMsg(txParams *types.TxParams) (sdk.Msg, error) {
-	// Just a stub for now
-	return nil, errors.New("instantiate_contract not implemented")
+func createInstantiateContractMsg(_ *types.TxParams) (sdk.Msg, error) {
+	// TODO: implement instantiate contract message creation
+	return nil, errors.New("instantiate contract not implemented yet")
 }
 
 // createExecuteContractMsg creates an execute contract message for CosmWasm
-func createExecuteContractMsg(txParams *types.TxParams) (sdk.Msg, error) {
-	// Just a stub for now
-	return nil, errors.New("execute_contract not implemented")
+func createExecuteContractMsg(_ *types.TxParams) (sdk.Msg, error) {
+	// TODO: implement execute contract message creation
+	return nil, errors.New("execute contract not implemented yet")
+}
+
+// createDistributedMultiSendMsg creates a multisend message using a distributor
+func createDistributedMultiSendMsg(txParams *types.TxParams, distributor interface{}) (sdk.Msg, error) {
+	// Generate a random seed if not provided
+	seed, ok := txParams.MsgParams["seed"].(int64)
+	if !ok {
+		// Generate a random seed if not provided
+		seed = time.Now().UnixNano()
+	}
+
+	// Convert the distributor to the expected interface
+	multisendDist, ok := distributor.(multiSendDistributor)
+	if !ok {
+		return nil, errors.New("invalid distributor type")
+	}
+
+	// Use the distributor to create a multisend message
+	fromAddress, _ := txParams.MsgParams["from_address"].(string)
+	msg, _, err := multisendDist.CreateDistributedMultiSendMsg(
+		fromAddress,
+		convertMapToMsgParams(txParams.MsgParams),
+		seed,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create distributed multisend message: %w", err)
+	}
+
+	return msg, nil
 }
 
 // BuildTransaction builds a transaction from the provided parameters
@@ -326,94 +360,16 @@ func createMessage(txParams *types.TxParams) (sdk.Msg, error) {
 
 	// Create the appropriate message based on the message type
 	switch txParams.MsgType {
-	case "bank_send":
+	case MsgTypeBankSend:
 		// Create a bank send message
 		return createBankSendMsg(txParams)
-	case "bank_multisend":
+	case MsgTypeBankMultisend:
 		// For multisend, check if we have a distributor
 		distributor, hasDistributor := txParams.MsgParams["distributor"]
 		if hasDistributor {
-			// Use the distributor to create a multisend message
-			seed, ok := txParams.MsgParams["seed"].(int64)
-			if !ok {
-				// Generate a random seed if not provided
-				seed = time.Now().UnixNano()
-			}
-
-			// Convert the distributor to the expected interface
-			multisendDist, ok := distributor.(multiSendDistributor)
-			if !ok {
-				return nil, errors.New("invalid distributor type")
-			}
-
-			// Use the distributor to create a multisend message
-			msg, _, err := multisendDist.CreateDistributedMultiSendMsg(
-				fromAddress,
-				convertMapToMsgParams(txParams.MsgParams),
-				seed,
-			)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create multisend message: %w", err)
-			}
-
-			// Calculate appropriate gas for multisend based on the number of outputs
-			if multisendMsg, ok := msg.(*banktypes.MsgMultiSend); ok {
-				numOutputs := len(multisendMsg.Outputs)
-				// Calculate gas for multisend considering the number of outputs
-				baseGas := uint64(100000)        // Increased base gas for a simple transaction
-				perRecipientGas := uint64(20000) // Increased gas per recipient
-				totalGasEstimate := baseGas + (uint64(numOutputs) * perRecipientGas)
-
-				// Cap at a much higher maximum for large multisends
-				maxGas := uint64(135150000) // 150 million gas limit (increased from 10 million)
-				if totalGasEstimate > maxGas {
-					totalGasEstimate = maxGas
-				}
-
-				// Progressive scaling for large multisends
-				if numOutputs > 50 && numOutputs <= 500 {
-					// For medium multisends, add a 30% buffer
-					totalGasEstimate = uint64(float64(totalGasEstimate) * 1.3)
-				} else if numOutputs > 500 {
-					// For very large multisends, add a 50% buffer
-					totalGasEstimate = uint64(float64(totalGasEstimate) * 1.5)
-				}
-
-				// Store the calculated gas amount in MsgParams for later use
-				if txParams.MsgParams == nil {
-					txParams.MsgParams = make(map[string]interface{})
-				}
-				txParams.MsgParams["calculated_gas_amount"] = totalGasEstimate
-
-				// Set the gas in the transaction parameters
-				if txParams.Gas == nil {
-					txParams.Gas = &types.GasSettings{
-						UseSimulation: true,
-						SafetyBuffer:  1.3, // Increased 30% buffer
-					}
-				}
-
-				// Record this gas estimate in our gas strategy manager for this message type
-				gasManager := GetGasStrategyManager()
-
-				// Try to get a better gas estimate from historical data
-				betterEstimate := gasManager.GetRecommendedGasForMsgType(
-					txParams.NodeURL,
-					"bank_multisend",
-					int64(totalGasEstimate),
-				)
-
-				if betterEstimate > 0 {
-					totalGasEstimate = uint64(betterEstimate)
-				}
-
-				fmt.Printf("Calculated gas for multisend with %d outputs: %d\n", numOutputs, totalGasEstimate)
-			}
-
-			return msg, nil
+			return createDistributedMultiSendMsg(txParams, distributor)
 		}
-
-		// Fallback to regular multisend if no distributor
+		// Fall back to regular multisend if no distributor
 		return createMultiSendMsg(txParams)
 	case "ibc_transfer":
 		// Create an IBC transfer message
@@ -480,7 +436,7 @@ func getDefaultGasLimitByMsgType(msgType string) uint64 {
 	switch strings.ToLower(msgType) {
 	case "bank_send":
 		return minGasBankSend
-	case "bank_multisend":
+	case MsgTypeBankMultisend:
 		return minGasBankMultiSend
 	case "ibc_transfer":
 		return minGasIbcTransfer
@@ -619,7 +575,7 @@ func BuildAndSignTransaction(
 	}
 
 	// Pass distributor through MsgParams for multisend operations
-	if txParams.Distributor != nil && txParams.MsgType == "bank_multisend" {
+	if txParams.Distributor != nil && txParams.MsgType == MsgTypeBankMultisend {
 		if txp.MsgParams == nil {
 			txp.MsgParams = make(map[string]interface{})
 		}
@@ -700,7 +656,7 @@ func BuildAndSignTransaction(
 	baseFeeThreshold := int64(200)
 
 	// For large multisend transactions, ensure the fee is proportionally higher
-	if txParams.MsgType == "bank_multisend" && gasLimit > 100000 {
+	if txParams.MsgType == MsgTypeBankMultisend && gasLimit > 100000 {
 		// Much higher minimum fee for large multisends - use gas-based calculation
 		minFee := int64(gasLimit) / 5000 // More aggressive scaling (changed from 10000)
 		if feeAmount < minFee {
@@ -730,8 +686,6 @@ func BuildAndSignTransaction(
 	// Set memo if provided
 	txBuilder.SetMemo("")
 
-	// Get account number - this is still needed, but we won't use its sequence
-	accNum := txParams.AccNum
 	fromAddress, _ := txParams.MsgParams["from_address"].(string)
 
 	// We only need account number from GetAccountInfo, NOT the sequence
@@ -742,7 +696,7 @@ func BuildAndSignTransaction(
 	}
 
 	// Use the fetched account number
-	accNum = fetchedAccNum
+	accNum := fetchedAccNum
 
 	// Only log the state sequence for debugging, but don't use it directly
 	// This helps us understand discrepancies between state and our tracked sequences
@@ -888,58 +842,52 @@ func ProcessBroadcastResponse(nodeURL, denom string, sequence uint64, respBytes 
 	// We can simply rely on the preemptive sequence update in BuildAndSignTransaction
 }
 
-// BroadcastTxSync is a wrapper around the standard broadcast that includes error processing
-func BroadcastTxSync(ctx context.Context, clientCtx sdkclient.Context, txBytes []byte, nodeURL, denom string, sequence uint64) (*sdk.TxResponse, error) {
-	resp, err := clientCtx.BroadcastTxSync(txBytes)
-
-	// Process broadcast response for errors to update our node-specific tracking
-	// We do this regardless of whether the broadcast itself returned an error
+// ProcessTxBroadcastResponse processes a transaction response and updates node-specific tracking
+func ProcessTxBroadcastResponse(resp *sdk.TxResponse, nodeURL, denom string, sequence uint64) {
 	if resp != nil {
 		// Marshal response to bytes for processing
 		respBytes, _ := json.Marshal(resp)
 		ProcessBroadcastResponse(nodeURL, denom, sequence, respBytes)
-	} else if err != nil {
-		// If we have an error but no response, process the error string
-		ProcessBroadcastResponse(nodeURL, denom, sequence, []byte(err.Error()))
 	}
-
-	return resp, err
 }
 
-// BroadcastTxAsync is a wrapper around the standard broadcast that includes error processing
-func BroadcastTxAsync(ctx context.Context, clientCtx sdkclient.Context, txBytes []byte, nodeURL, denom string, sequence uint64) (*sdk.TxResponse, error) {
+// TxSync broadcasts a transaction synchronously and returns a response once it's checked
+func TxSync(_ context.Context, clientCtx sdkclient.Context, txBytes []byte, nodeURL, denom string, sequence uint64) (*sdk.TxResponse, error) {
+	resp, err := clientCtx.BroadcastTxSync(txBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to broadcast transaction: %w", err)
+	}
+
+	ProcessTxBroadcastResponse(resp, nodeURL, denom, sequence)
+	return resp, nil
+}
+
+// TxAsync broadcasts a transaction asynchronously and returns immediately without waiting for CheckTx
+func TxAsync(_ context.Context, clientCtx sdkclient.Context, txBytes []byte, nodeURL, denom string, sequence uint64) (*sdk.TxResponse, error) {
 	resp, err := clientCtx.BroadcastTxAsync(txBytes)
-
-	// Process broadcast response for errors to update our node-specific tracking
-	if resp != nil {
-		respBytes, _ := json.Marshal(resp)
-		ProcessBroadcastResponse(nodeURL, denom, sequence, respBytes)
-	} else if err != nil {
-		ProcessBroadcastResponse(nodeURL, denom, sequence, []byte(err.Error()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
 
-	return resp, err
+	ProcessTxBroadcastResponse(resp, nodeURL, denom, sequence)
+	return resp, nil
 }
 
-// BroadcastTxBlock is a wrapper around block/commit broadcast that includes error processing
-func BroadcastTxBlock(ctx context.Context, clientCtx sdkclient.Context, txBytes []byte, nodeURL, denom string, sequence uint64) (*sdk.TxResponse, error) {
+// TxBlock broadcasts a transaction and waits for it to be included in a block
+func TxBlock(_ context.Context, clientCtx sdkclient.Context, txBytes []byte, nodeURL, denom string, sequence uint64) (*sdk.TxResponse, error) {
 	// In newer versions of the SDK, BroadcastTxCommit is not directly available on clientCtx
 	// Instead, we use the general BroadcastTx method with the appropriate mode
 	resp, err := clientCtx.BroadcastTx(txBytes)
-
-	// Process broadcast response for errors to update our node-specific tracking
-	if resp != nil {
-		respBytes, _ := json.Marshal(resp)
-		ProcessBroadcastResponse(nodeURL, denom, sequence, respBytes)
-	} else if err != nil {
-		ProcessBroadcastResponse(nodeURL, denom, sequence, []byte(err.Error()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
 
-	return resp, err
+	ProcessTxBroadcastResponse(resp, nodeURL, denom, sequence)
+	return resp, nil
 }
 
-// BroadcastTx broadcasts a transaction and handles errors
-func BroadcastTx(
+// Tx broadcasts a transaction with the specified broadcast mode
+func Tx(
 	ctx context.Context,
 	clientCtx sdkclient.Context,
 	txBytes []byte,
@@ -953,15 +901,15 @@ func BroadcastTx(
 	// Use our custom wrappers that include error tracking
 	switch broadcast {
 	case "sync":
-		resp, err = BroadcastTxSync(ctx, clientCtx, txBytes, txParams.NodeURL, txParams.Config.Denom, sequence)
+		resp, err = TxSync(ctx, clientCtx, txBytes, txParams.NodeURL, txParams.Config.Denom, sequence)
 	case "async":
-		resp, err = BroadcastTxAsync(ctx, clientCtx, txBytes, txParams.NodeURL, txParams.Config.Denom, sequence)
+		resp, err = TxAsync(ctx, clientCtx, txBytes, txParams.NodeURL, txParams.Config.Denom, sequence)
 	case "block":
 		// For commit/block mode, use our wrapper
-		resp, err = BroadcastTxBlock(ctx, clientCtx, txBytes, txParams.NodeURL, txParams.Config.Denom, sequence)
+		resp, err = TxBlock(ctx, clientCtx, txBytes, txParams.NodeURL, txParams.Config.Denom, sequence)
 	default:
 		// Default to sync mode
-		resp, err = BroadcastTxSync(ctx, clientCtx, txBytes, txParams.NodeURL, txParams.Config.Denom, sequence)
+		resp, err = TxSync(ctx, clientCtx, txBytes, txParams.NodeURL, txParams.Config.Denom, sequence)
 	}
 
 	// Further process the response regardless of error status
@@ -970,10 +918,15 @@ func BroadcastTx(
 	return resp, err
 }
 
-// ProcessTxBroadcastResult processes a transaction broadcast result and returns a custom response
-func ProcessTxBroadcastResult(txResponse *sdk.TxResponse, err error, nodeURL string, sequence uint64) {
+// ProcessTxBroadcastResult processes the result of a transaction broadcast
+func ProcessTxBroadcastResult(txResponse *sdk.TxResponse, _ error, nodeURL string, sequence uint64) {
+	if txResponse == nil {
+		log.Printf("🔴 FAILURE: Nil response for sequence %d\n", sequence)
+		return
+	}
+
 	// Check if we have a response code indicating error
-	if txResponse != nil && txResponse.Code != 0 {
+	if txResponse.Code != 0 {
 		// Process the error log to update our node tracking
 		if txResponse.RawLog != "" {
 			// Handle specific error cases
@@ -1002,37 +955,95 @@ func SendTx(
 	}
 
 	// Broadcast using our wrapper functions to ensure sequence & fee tracking
-	resp, err := BroadcastTx(ctx, clientCtx, txBytes, txParams, sequence, broadcastMode)
+	resp, err := Tx(ctx, clientCtx, txBytes, txParams, sequence, broadcastMode)
 	if err != nil {
-		// Check if it's a sequence or fee error that we can recover from
-		if strings.Contains(err.Error(), "account sequence mismatch") ||
-			strings.Contains(err.Error(), "insufficient fees") {
-			// Log retry attempt
-			fmt.Printf("Retrying transaction due to recoverable error: %v\n", err)
-
-			// Get updated sequence from error if possible
-			// This is a fallback - our ProcessBroadcastResponse should already have updated the sequence
-			correctSeq := sequence
-			seqRegex := regexp.MustCompile(sequenceMismatchPattern)
-			if matches := seqRegex.FindStringSubmatch(err.Error()); len(matches) > 1 {
-				correctSeq, _ = strconv.ParseUint(matches[1], 10, 64)
-			} else {
-				// If we couldn't extract sequence from error, use our cached sequence
-				nodeSettings := getNodeSettings(txParams.NodeURL)
-				nodeSettings.mutex.RLock()
-				if nodeSettings.LastSequence > sequence {
-					correctSeq = nodeSettings.LastSequence
-				}
-				nodeSettings.mutex.RUnlock()
-			}
-
-			// Try one more time with corrected sequence
-			return SendTx(ctx, txParams, correctSeq, broadcastMode)
-		}
-
-		// Not a recoverable error, return it
-		return resp, err
+		return handleBroadcastError(ctx, err, txParams, sequence, broadcastMode)
 	}
 
 	return resp, nil
+}
+
+// handleBroadcastError handles errors from broadcasting a transaction
+func handleBroadcastError(
+	ctx context.Context,
+	err error,
+	txParams types.TransactionParams,
+	sequence uint64,
+	broadcastMode string,
+) (*sdk.TxResponse, error) {
+	// Check if it's a sequence or fee error that we can recover from
+	if strings.Contains(err.Error(), "account sequence mismatch") ||
+		strings.Contains(err.Error(), "insufficient fees") {
+		// Log retry attempt
+		fmt.Printf("Retrying transaction due to recoverable error: %v\n", err)
+
+		// Try to recover with a corrected sequence
+		return retryWithCorrectedSequence(ctx, err, txParams, sequence, broadcastMode)
+	}
+
+	// For other errors, just return the error
+	return nil, err
+}
+
+// retryWithCorrectedSequence retries a transaction with a corrected sequence number
+func retryWithCorrectedSequence(
+	ctx context.Context,
+	originalError error,
+	txParams types.TransactionParams,
+	sequence uint64,
+	broadcastMode string,
+) (*sdk.TxResponse, error) {
+	// Get updated sequence from error if possible
+	// This is a fallback - our ProcessBroadcastResponse should already have updated the sequence
+	correctSeq := sequence
+
+	seqRegex := regexp.MustCompile(sequenceMismatchPattern)
+	if matches := seqRegex.FindStringSubmatch(originalError.Error()); len(matches) > 1 {
+		correctSeq, _ = strconv.ParseUint(matches[1], 10, 64)
+	} else {
+		// If we can't extract from the error, get sequence from another source
+		correctSeq = getSequenceFromChain(ctx, txParams, sequence)
+	}
+
+	// Only retry if we got a different sequence
+	if correctSeq != sequence {
+		fmt.Printf("Retrying with corrected sequence: %d (was %d)\n", correctSeq, sequence)
+
+		// Rebuild and sign the transaction with the new sequence
+		newTxBytes, err := BuildAndSignTransaction(ctx, txParams, correctSeq, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to rebuild transaction: %w", err)
+		}
+
+		// Get a new client context
+		clientCtx, err := GetClientContext(txParams.Config, txParams.NodeURL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get client context: %w", err)
+		}
+
+		// Try broadcasting again
+		return Tx(ctx, clientCtx, newTxBytes, txParams, correctSeq, broadcastMode)
+	}
+
+	// If we can't recover, return the original error
+	return nil, originalError
+}
+
+// getSequenceFromChain attempts to get a sequence from the chain or falls back to incrementing
+func getSequenceFromChain(ctx context.Context, txParams types.TransactionParams, currentSequence uint64) uint64 {
+	// Create a new client context to get account info
+	tempClientCtx, err := GetClientContext(txParams.Config, txParams.NodeURL)
+	if err != nil {
+		// If we can't get client context, increment by 1 as fallback
+		return currentSequence + 1
+	}
+
+	// Try to get sequence from chain
+	chainSeq, _, err := GetAccountInfo(ctx, tempClientCtx, txParams.AcctAddress)
+	if err == nil && chainSeq > currentSequence {
+		return chainSeq
+	}
+
+	// If we still can't get it, increment by 1 as a last resort
+	return currentSequence + 1
 }
