@@ -1,0 +1,43 @@
+# Meteorite configuration for AtomOne (atomone)
+# Generated from the Cosmos Chain Registry
+
+chain = "atomone-1"
+gas_per_byte = 100
+base_gas = 200000
+msg_type = "hybrid"
+multisend = true
+num_multisend = 3000
+positions = 50
+slip44 = 118
+denom = "uatone"
+prefix = "atone"
+broadcast_mode = "grpc"
+
+[gas]
+low = 25
+precision = 3
+
+[nodes]
+rpc = [
+    "https://atomone.rpc.nodeshub.online:443",
+    "https://atomone-rpc.allinbits.com:443",
+    "https://rpc.atomone-1.atomone.aviaone.com:443",
+    "https://rpc.atomone.citizenweb3.com:443",
+    "https://rpc-atone.vinjan.xyz",
+    "https://atomone.rpc.m.stavr.tech:443",
+    "https://atomone-rpc.publicnode.com:443",
+    "https://rpc-atomone.nodeist.net",
+    "https://atomone-mainnet-rpc.itrocket.net:443",
+    "https://community.nuxian-node.ch:6797/atomone/trpc",
+    "https://rpc-atomone.ecostake.com",
+    "https://atomone-rpc.cogwheel.zone",
+    "https://rpc-atomone-1.cros-nest.com:443",
+    "https://atomone_mainnet_rpc.chain.whenmoonwhenlambo.money",
+    "https://atomone-rpc.ibs.team:443",
+]
+api = "https://atomone-api.allinbits.com"
+grpc = "atomone-grpc.allinbits.com:9090"
+
+[msg_params]
+to_address = ""
+amount = 1

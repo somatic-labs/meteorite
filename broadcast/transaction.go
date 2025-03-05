@@ -11,15 +11,17 @@ import (
 	"sync"
 	"time"
 
+	bankmodule "github.com/somatic-labs/meteorite/modules/bank"
 	types "github.com/somatic-labs/meteorite/types"
 
 	sdkmath "cosmossdk.io/math"
 
+	"github.com/cosmos/cosmos-sdk/client"
 	sdkclient "github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/tx"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	signing "github.com/cosmos/cosmos-sdk/types/tx/signing"
-	xauthsigning "github.com/cosmos/cosmos-sdk/x/auth/signing"
+	authsigning "github.com/cosmos/cosmos-sdk/x/auth/signing"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 )
 
@@ -273,7 +275,7 @@ func BuildTransaction(ctx context.Context, txParams *types.TxParams) ([]byte, er
 	sigV2, err := tx.SignWithPrivKey(
 		ctx,
 		signing.SignMode_SIGN_MODE_DIRECT,
-		xauthsigning.SignerData{
+		authsigning.SignerData{
 			ChainID:       txParams.ChainID,
 			AccountNumber: accNum,
 			Sequence:      accSeq,
@@ -305,7 +307,7 @@ func BuildTransaction(ctx context.Context, txParams *types.TxParams) ([]byte, er
 			// Schedule an async check to verify if the tx was processed by the node
 			// We'll mark this node as accepting zero-gas transactions if the tx is successful
 			gsm := GetGasStrategyManager()
-			gsm.RecordTransactionResult(txParams.NodeURL, true, 0, txParams.MsgType)
+			gsm.RecordTransactionResult(txParams.NodeURL, true, 0, txParams.MsgType, 0, txParams.Config.Denom)
 		}()
 	}
 
@@ -591,218 +593,137 @@ func calculateInitialFee(gasLimit uint64, gasPrice int64) int64 {
 }
 
 // BuildAndSignTransaction builds and signs a transaction with proper error handling
+// BuildAndSignTransaction builds and signs a transaction based on the provided parameters
 func BuildAndSignTransaction(
 	ctx context.Context,
 	txParams types.TransactionParams,
 	sequence uint64,
-	_ interface{},
+	encodingConfig client.TxConfig,
 ) ([]byte, error) {
-	// First, check if we have more up-to-date sequence info for this node from previous errors
-	nodeSettings := getNodeSettings(txParams.NodeURL)
-	nodeSettings.mutex.RLock()
-	if nodeSettings.LastSequence > sequence {
-		// Log that we're using the cached sequence from previous error responses
-		fmt.Printf("Using cached sequence %d instead of provided %d for node %s (from previous tx errors)\n",
-			nodeSettings.LastSequence, sequence, txParams.NodeURL)
-		sequence = nodeSettings.LastSequence
-	}
-	nodeSettings.mutex.RUnlock()
-
-	// We need to ensure the passed-in sequence is used
-	txp := &types.TxParams{
-		Config:    txParams.Config,
-		NodeURL:   txParams.NodeURL,
-		ChainID:   txParams.ChainID,
-		PrivKey:   txParams.PrivKey,
-		MsgType:   txParams.MsgType,
-		MsgParams: txParams.MsgParams,
-	}
-
-	// Pass distributor through MsgParams for multisend operations
-	if txParams.Distributor != nil && txParams.MsgType == "bank_multisend" {
-		if txp.MsgParams == nil {
-			txp.MsgParams = make(map[string]interface{})
-		}
-		txp.MsgParams["distributor"] = txParams.Distributor
-	}
-
-	// Use ClientContext with correct sequence
-	clientCtx, err := GetClientContext(txParams.Config, txParams.NodeURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get client context: %w", err)
-	}
-
-	// Build and sign the transaction
-	msg, err := createMessage(txp)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create message: %w", err)
-	}
-
 	// Create a new TxBuilder
-	txBuilder := clientCtx.TxConfig.NewTxBuilder()
+	txBuilder := encodingConfig.NewTxBuilder()
 
-	// Set the message and other transaction parameters
-	if err := txBuilder.SetMsgs(msg); err != nil {
-		return nil, fmt.Errorf("failed to set messages: %w", err)
-	}
-
-	// Check if there's a pre-calculated gas amount for multisend transactions
-	var gasLimit uint64
-	if calculatedGas, ok := txp.MsgParams["calculated_gas_amount"].(uint64); ok && calculatedGas > 0 {
-		// Use the pre-calculated gas amount for multisend
-		gasLimit = calculatedGas
-		fmt.Printf("Using pre-calculated gas amount for multisend: %d\n", gasLimit)
-	} else {
-		// Estimate gas through simulation
-		simulatedGas, err := DetermineOptimalGas(ctx, clientCtx, tx.Factory{}, 1.3, msg)
-		if err != nil {
-			// Use default if simulation fails
-			gasLimit = uint64(txParams.Config.BaseGas)
-			fmt.Printf("Gas simulation failed, using default gas: %d\n", gasLimit)
-		} else {
-			gasLimit = simulatedGas
+	// Determine gas limit (use pre-calculated value for multisend)
+	gasLimit, ok := txParams.MsgParams["calculated_gas_amount"].(uint64)
+	if !ok {
+		gasLimit = uint64(200000) // Default fallback
+		if txParams.MsgType == "bank_multisend" {
+			gasLimit = 90150000 // Default for multisend with 3000 recipients
 		}
 	}
 
+	// Get gas price from config and adjust with node's minimum requirement
+	gasPrice, err := strconv.ParseFloat(txParams.Config.Gas.Price, 64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse gas price: %w", err)
+	}
+
+	// Adjust gas price based on node's minimum requirement
+	minGasPrice := GetGasStrategyManager().GetMinGasPrice(txParams.NodeURL)
+	if minGasPrice > gasPrice {
+		gasPrice = minGasPrice
+		fmt.Printf("Adjusted gas price to %f for node %s (min required: %f)\n",
+			gasPrice, txParams.NodeURL, minGasPrice)
+	}
+
+	// Calculate fee
+	feeAmount := int64(gasPrice * float64(gasLimit))
+	fee := sdk.NewCoins(sdk.NewInt64Coin(txParams.Config.Denom, feeAmount))
+	txBuilder.SetFeeAmount(fee)
 	txBuilder.SetGasLimit(gasLimit)
 
-	// Set fee - get the gas price from config
-	gasPrice := txParams.Config.Gas.Low
+	fmt.Printf("Setting transaction fee: %d%s (gas limit: %d, gas price: %f) for node %s\n",
+		feeAmount, txParams.Config.Denom, gasLimit, gasPrice, txParams.NodeURL)
 
-	// For zero gas price, check if we should use adaptive gas pricing
-	if gasPrice == 0 {
-		gsm := GetGasStrategyManager()
-		caps := gsm.GetNodeCapabilities(txParams.NodeURL)
-		if !caps.AcceptsZeroGas {
-			// Use low non-zero gas price if node doesn't support zero gas
-			gasPrice = 1
-			fmt.Printf("Node %s may not support zero gas, using gas price: %d\n",
-				txParams.NodeURL, gasPrice)
+	// Build the message based on MsgType
+	var msg sdk.Msg
+	switch txParams.MsgType {
+	case "bank_send":
+		var memo string
+		msg, memo, err = bankmodule.CreateBankSendMsg(txParams.Config, txParams.MsgParams["from_address"].(string), convertMapToMsgParams(txParams.MsgParams))
+		if err != nil {
+			return nil, fmt.Errorf("failed to build send message: %w", err)
 		}
-	}
-
-	// Calculate initial fee amount
-	feeAmount := calculateInitialFee(gasLimit, gasPrice)
-
-	// Important: Check if we have a stored minimum fee for this node and use it if higher
-	nodeSettings.mutex.RLock()
-	if minFee, exists := nodeSettings.MinimumFees[txParams.Config.Denom]; exists {
-		if uint64(feeAmount) < minFee {
-			fmt.Printf("Using node-specific minimum fee %d instead of calculated %d for %s\n",
-				minFee, feeAmount, txParams.NodeURL)
-			feeAmount = int64(minFee)
+		if err := txBuilder.SetMsgs(msg); err != nil {
+			return nil, fmt.Errorf("failed to set send message: %w", err)
 		}
-	}
-	nodeSettings.mutex.RUnlock()
-
-	// Apply a more aggressive minimum fee strategy to prevent "insufficient fees" errors
-	// For nodes that have previously returned fee errors, add a buffer
-	baseFeeThreshold := int64(200)
-
-	// For large multisend transactions, ensure the fee is proportionally higher
-	if txParams.MsgType == "bank_multisend" && gasLimit > 100000 {
-		// Much higher minimum fee for large multisends - use gas-based calculation
-		minFee := int64(gasLimit) / 5000 // More aggressive scaling (changed from 10000)
-		if feeAmount < minFee {
-			feeAmount = minFee
-			fmt.Printf("Increasing multisend fee to %d based on gas usage\n", feeAmount)
+		// Set memo if needed
+		if memo != "" && txParams.Config.Memo == "" {
+			txParams.Config.Memo = memo
 		}
-	} else if gasPrice > 0 && feeAmount < baseFeeThreshold {
-		// For regular transactions, use higher minimum fee
-		feeAmount = baseFeeThreshold
-		fmt.Printf("Using minimum fee threshold of %d\n", feeAmount)
+	case "bank_multisend":
+		distributor, ok := txParams.Distributor.(*bankmodule.MultiSendDistributor)
+		if !ok {
+			return nil, fmt.Errorf("invalid distributor for multisend")
+		}
+		var memo string
+		msg, memo, err = distributor.CreateDistributedMultiSendMsg(
+			txParams.MsgParams["from_address"].(string),
+			convertMapToMsgParams(txParams.MsgParams),
+			time.Now().UnixNano(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build multisend message: %w", err)
+		}
+		if err := txBuilder.SetMsgs(msg); err != nil {
+			return nil, fmt.Errorf("failed to set multisend message: %w", err)
+		}
+		// Set memo if needed
+		if memo != "" && txParams.Config.Memo == "" {
+			txParams.Config.Memo = memo
+		}
+	default:
+		return nil, fmt.Errorf("unsupported message type: %s", txParams.MsgType)
 	}
 
-	// Apply additional node-specific fee buffer based on historical errors
-	// This helps prevent fee errors on chains that are sensitive to fee amounts
-	feeAmount = applyNodeFeeBuffer(txParams.NodeURL, txParams.Config.Denom, feeAmount)
-
-	feeCoin := fmt.Sprintf("%d%s", feeAmount, txParams.Config.Denom)
-	fee, err := sdk.ParseCoinsNormalized(feeCoin)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse fee: %w", err)
+	// Set memo and timeout height if provided
+	txBuilder.SetMemo(txParams.Config.Memo)
+	if txParams.Config.TimeoutHeight > 0 {
+		txBuilder.SetTimeoutHeight(uint64(txParams.Config.TimeoutHeight))
 	}
 
-	fmt.Printf("Setting transaction fee: %s (gas limit: %d, gas price: %d) for node %s\n",
-		fee.String(), gasLimit, gasPrice, txParams.NodeURL)
-	txBuilder.SetFeeAmount(fee)
-
-	// Set memo if provided
-	txBuilder.SetMemo("")
-
-	// Get account number - this is still needed, but we won't use its sequence
-	accNum := txParams.AccNum
-	fromAddress, _ := txParams.MsgParams["from_address"].(string)
-
-	// We only need account number from GetAccountInfo, NOT the sequence
-	// The sequence we use should be from our tracking system, which considers mempool state
-	fetchedAccNum, stateSequence, err := GetAccountInfo(ctx, clientCtx, fromAddress)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get account info: %w", err)
+	// Use a simplified approach for signing that works with SDK v0.50.x
+	// Create an initial signature with no actual signature data
+	sigData := &signing.SingleSignatureData{
+		SignMode:  signing.SignMode_SIGN_MODE_DIRECT,
+		Signature: nil,
 	}
 
-	// Use the fetched account number
-	accNum = fetchedAccNum
-
-	// Only log the state sequence for debugging, but don't use it directly
-	// This helps us understand discrepancies between state and our tracked sequences
-	fmt.Printf("Node %s reports state sequence %d, using tracked sequence %d\n",
-		txParams.NodeURL, stateSequence, sequence)
-
-	// If we have no better information (first tx to this node), then use state sequence
-	if sequence == 0 {
-		sequence = stateSequence
-		fmt.Printf("First transaction to node %s, using state sequence: %d\n", txParams.NodeURL, sequence)
-		updateSequence(txParams.NodeURL, sequence)
-	}
-
-	// Set up signature
-	sigV2 := signing.SignatureV2{
+	sig := signing.SignatureV2{
 		PubKey:   txParams.PubKey,
+		Data:     sigData,
 		Sequence: sequence,
-		Data: &signing.SingleSignatureData{
-			SignMode: signing.SignMode_SIGN_MODE_DIRECT,
-		},
 	}
 
-	if err := txBuilder.SetSignatures(sigV2); err != nil {
-		return nil, fmt.Errorf("failed to set signatures: %w", err)
+	// Set the initial signature
+	if err := txBuilder.SetSignatures(sig); err != nil {
+		return nil, fmt.Errorf("failed to set initial signature: %w", err)
 	}
 
-	signerData := xauthsigning.SignerData{
-		ChainID:       txParams.ChainID,
-		AccountNumber: accNum,
-		Sequence:      sequence,
+	// Get bytes to sign - manually encode the transaction
+	// First encode to get the bytes to sign
+	encodedTx, err := encodingConfig.TxEncoder()(txBuilder.GetTx())
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode transaction for signing: %w", err)
 	}
 
 	// Sign the transaction with the private key
-	sigV2, err = tx.SignWithPrivKey(
-		ctx,
-		signing.SignMode_SIGN_MODE_DIRECT,
-		signerData,
-		txBuilder,
-		txParams.PrivKey,
-		clientCtx.TxConfig,
-		sequence,
-	)
+	signature, err := txParams.PrivKey.Sign(encodedTx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
-	// Set the signed signature
-	if err := txBuilder.SetSignatures(sigV2); err != nil {
-		return nil, fmt.Errorf("failed to set signatures: %w", err)
+	// Update the signature with the real signature
+	sigData.Signature = signature
+	if err := txBuilder.SetSignatures(sig); err != nil {
+		return nil, fmt.Errorf("failed to set final signature: %w", err)
 	}
 
 	// Encode the transaction
-	txBytes, err := clientCtx.TxConfig.TxEncoder()(txBuilder.GetTx())
+	txBytes, err := encodingConfig.TxEncoder()(txBuilder.GetTx())
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode transaction: %w", err)
 	}
-
-	// If successful, update our node sequence cache preemptively
-	// This helps avoid sequence errors on subsequent transactions to the same node
-	updateSequence(txParams.NodeURL, sequence+1)
 
 	return txBytes, nil
 }

@@ -3,6 +3,7 @@ package broadcast
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
@@ -15,7 +16,13 @@ import (
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 )
 
-// Add these at the top of the file
+// Global variables for account locking and node assignment
+var (
+	accountLocks      sync.Map // map[string]*sync.Mutex for account serialization
+	accountNodeMap    sync.Map // map[string]string for account-to-node mapping
+	accountNodeMapMux sync.Mutex
+)
+
 type TimingMetrics struct {
 	PrepStart  time.Time
 	SignStart  time.Time
@@ -61,14 +68,17 @@ func init() {
 	banktypes.RegisterInterfaces(cdc.InterfaceRegistry())
 }
 
-// Transaction broadcasts the transaction bytes to the given RPC endpoint.
-func Transaction(txBytes []byte, rpcEndpoint string) (*coretypes.ResultBroadcastTx, error) {
-	client, err := GetClient(rpcEndpoint)
-	if err != nil {
-		return nil, err
+// assignNodeToAccount assigns a node to an account if not already assigned
+func assignNodeToAccount(acctAddress, nodeURL string) string {
+	accountNodeMapMux.Lock()
+	defer accountNodeMapMux.Unlock()
+
+	if assignedNode, ok := accountNodeMap.Load(acctAddress); ok {
+		return assignedNode.(string)
 	}
 
-	return client.Transaction(txBytes)
+	accountNodeMap.Store(acctAddress, nodeURL)
+	return nodeURL
 }
 
 // Loop handles the main transaction broadcasting logic
@@ -82,8 +92,23 @@ func Loop(
 	responseCodes = make(map[uint32]int)
 	sequence := txParams.Sequence
 
+	// Assign this account to the provided node if not already assigned
+	nodeURL := assignNodeToAccount(txParams.AcctAddress, txParams.NodeURL)
+	if nodeURL != txParams.NodeURL {
+		fmt.Printf("[POS-%d] Account %s reassigned to node %s (original: %s)\n",
+			position, txParams.AcctAddress, nodeURL, txParams.NodeURL)
+	}
+	txParams.NodeURL = nodeURL
+
+	// Get or create lock for this account
+	lock, _ := accountLocks.LoadOrStore(txParams.AcctAddress, &sync.Mutex{})
+	mutex := lock.(*sync.Mutex)
+	mutex.Lock()
+	defer mutex.Unlock()
+
 	// Log the start of broadcasting for this position
-	LogVisualizerDebug(fmt.Sprintf("Starting broadcasts for position %d (batchSize: %d)", position, batchSize))
+	LogVisualizerDebug(fmt.Sprintf("Starting broadcasts for position %d (batchSize: %d) on node %s",
+		position, batchSize, txParams.NodeURL))
 
 	for i := 0; i < batchSize; i++ {
 		currentSequence := sequence
@@ -107,7 +132,7 @@ func Loop(
 			// Update visualizer with failed tx
 			UpdateVisualizerStats(0, 1, txLatency)
 
-			if resp != nil && resp.Code == 32 {
+			if resp != nil && resp.Code == 32 { // Sequence mismatch
 				newSeq, success, newResp := handleSequenceMismatch(txParams, position, sequence, err)
 				sequence = newSeq
 				if success {
@@ -117,8 +142,16 @@ func Loop(
 					// Update visualizer with successful tx after sequence recovery
 					UpdateVisualizerStats(1, 0, metrics.Complete.Sub(metrics.PrepStart))
 				}
+				// Record gas result even on failure for fee adjustment
+				GetGasStrategyManager().RecordTransactionResult(
+					txParams.NodeURL, success, 0, txParams.MsgType, txParams.MsgParams["calculated_gas_amount"].(uint64), err.Error())
 				continue
 			}
+
+			// Record failure for gas strategy adjustment
+			gasLimit, _ := txParams.MsgParams["calculated_gas_amount"].(uint64)
+			GetGasStrategyManager().RecordTransactionResult(
+				txParams.NodeURL, false, 0, txParams.MsgType, gasLimit, err.Error())
 			continue
 		}
 
@@ -126,6 +159,11 @@ func Loop(
 		successfulTxs++
 		responseCodes[resp.Code]++
 		sequence++
+
+		// Record success for gas strategy
+		gasLimit, _ := txParams.MsgParams["calculated_gas_amount"].(uint64)
+		GetGasStrategyManager().RecordTransactionResult(
+			txParams.NodeURL, true, 0, txParams.MsgType, gasLimit, "")
 
 		// Update visualizer with successful tx
 		UpdateVisualizerStats(1, 0, txLatency)

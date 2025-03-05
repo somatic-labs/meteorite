@@ -329,9 +329,11 @@ func runChainTest(selection *chainregistry.ChainSelection, configMap map[string]
 	printAccountInformation(accounts, config)
 
 	// Check and adjust balances if needed
-	if err := checkAndAdjustBalances(accounts, config); err != nil {
-		return fmt.Errorf("failed to handle balance adjustment: %v", err)
-	}
+	/*
+		if err := checkAndAdjustBalances(accounts, config); err != nil {
+			return fmt.Errorf("failed to handle balance adjustment: %v", err)
+		}
+	*/
 
 	// Get chain ID
 	chainID := config.Chain // Use the chain ID from the config

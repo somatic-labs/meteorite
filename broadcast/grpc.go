@@ -36,7 +36,7 @@ func SendTransactionViaGRPC(
 		txParams.Sequence = sequence
 
 		// Build and sign the transaction
-		txBytes, err := BuildAndSignTransaction(ctx, txParams, sequence, encodingConfig)
+		txBytes, err := BuildAndSignTransaction(ctx, txParams, sequence, encodingConfig.TxConfig)
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to build transaction: %w", err)
 		}
