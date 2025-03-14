@@ -671,7 +671,7 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 	})
 
 	// 4. Prepare sequences for all accounts that will send funds
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	// Find all sender accounts

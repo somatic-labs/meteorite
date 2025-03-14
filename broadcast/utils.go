@@ -2,9 +2,14 @@ package broadcast
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"strconv"
 	"sync"
+	"time"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	types "github.com/somatic-labs/meteorite/types"
@@ -140,10 +145,13 @@ func MakeEncodingConfig() codec.ProtoCodecMarshaler {
 
 // NodeSelector manages the distribution of transactions across RPC nodes
 type NodeSelector struct {
-	nodes         []string
-	nextNodeIndex map[uint32]int // map position -> next node index
-	nodeUsage     map[string]int // track usage count for each node
-	mutex         sync.RWMutex
+	nodes               []string
+	nextNodeIndex       map[uint32]int  // map position -> next node index
+	nodeUsage           map[string]int  // track usage count for each node
+	nodeHealth          map[string]bool // track health status of each node
+	mutex               sync.RWMutex
+	lastHealthCheck     time.Time
+	healthCheckInterval time.Duration
 }
 
 var (
@@ -154,11 +162,7 @@ var (
 // GetNodeSelector returns the global node selector
 func GetNodeSelector() *NodeSelector {
 	nodeSelectorOnce.Do(func() {
-		globalNodeSelector = &NodeSelector{
-			nodes:         []string{},
-			nextNodeIndex: make(map[uint32]int),
-			nodeUsage:     make(map[string]int),
-		}
+		globalNodeSelector = &NodeSelector{}
 	})
 	return globalNodeSelector
 }
@@ -168,34 +172,65 @@ func (ns *NodeSelector) SetNodes(nodes []string) {
 	ns.mutex.Lock()
 	defer ns.mutex.Unlock()
 
-	// Create a copy of the nodes slice
-	ns.nodes = make([]string, len(nodes))
-	copy(ns.nodes, nodes)
-
-	// Reset usage statistics for nodes that no longer exist
-	for node := range ns.nodeUsage {
-		found := false
-		for _, n := range nodes {
-			if n == node {
-				found = true
-				break
-			}
-		}
-		if !found {
-			delete(ns.nodeUsage, node)
-		}
+	if len(nodes) == 0 {
+		return
 	}
 
-	// Initialize usage for new nodes
-	for _, node := range ns.nodes {
+	// Initialize health status map if needed
+	if ns.nodeHealth == nil {
+		ns.nodeHealth = make(map[string]bool)
+	}
+
+	// Set default health check interval if not set
+	if ns.healthCheckInterval == 0 {
+		ns.healthCheckInterval = 5 * time.Minute
+	}
+
+	// Filter nodes based on health if we haven't done a health check recently
+	if time.Since(ns.lastHealthCheck) > ns.healthCheckInterval || len(ns.nodes) == 0 {
+		fmt.Println("Performing node health check...")
+		healthyNodes := FilterHealthyNodes(nodes)
+
+		// If we found healthy nodes, use only those
+		if len(healthyNodes) > 0 {
+			nodes = healthyNodes
+		} else {
+			fmt.Println("Warning: Using all provided nodes as no healthy nodes were found")
+		}
+
+		// Update health status for all nodes
+		for _, node := range nodes {
+			healthy, _ := CheckNodeHealth(node)
+			ns.nodeHealth[node] = healthy
+		}
+
+		ns.lastHealthCheck = time.Now()
+	}
+
+	// Store the nodes
+	ns.nodes = nodes
+
+	// Initialize or reset the node index map
+	if ns.nextNodeIndex == nil {
+		ns.nextNodeIndex = make(map[uint32]int)
+	}
+
+	// Initialize the usage counter if needed
+	if ns.nodeUsage == nil {
+		ns.nodeUsage = make(map[string]int)
+	}
+
+	// Reset counters for new nodes that don't have entries yet
+	for _, node := range nodes {
 		if _, exists := ns.nodeUsage[node]; !exists {
 			ns.nodeUsage[node] = 0
 		}
 	}
+
+	fmt.Printf("Node selector initialized with %d nodes\n", len(nodes))
 }
 
-// GetNextNode returns the next node for a specific position
-// This ensures each position consistently uses the same sequence of nodes
+// GetNextNode gets the next node for a specific position, preferring healthy nodes
 func (ns *NodeSelector) GetNextNode(position uint32) string {
 	ns.mutex.Lock()
 	defer ns.mutex.Unlock()
@@ -204,47 +239,122 @@ func (ns *NodeSelector) GetNextNode(position uint32) string {
 		return ""
 	}
 
-	// Get the current index for this position
+	// Check if we need to refresh node health status
+	if time.Since(ns.lastHealthCheck) > ns.healthCheckInterval {
+		// Release lock during potentially long operation
+		ns.mutex.Unlock()
+		ns.CheckNodeStatuses()
+		ns.mutex.Lock()
+	}
+
+	// Try to find a healthy node first
+	var healthyNodes []string
+	for _, node := range ns.nodes {
+		if healthy, exists := ns.nodeHealth[node]; exists && healthy {
+			healthyNodes = append(healthyNodes, node)
+		}
+	}
+
+	// If we have healthy nodes, select from those
+	nodeList := ns.nodes
+	if len(healthyNodes) > 0 {
+		nodeList = healthyNodes
+	}
+
+	// Get current index for this position
 	idx, exists := ns.nextNodeIndex[position]
 	if !exists {
-		// First time for this position, use position % nodes.length as starting point
-		// This distributes positions across nodes from the beginning
-		idx = int(position) % len(ns.nodes)
+		// Initialize with a position-based offset to distribute initial load
+		idx = int(position % uint32(len(nodeList)))
 	}
 
 	// Get the node
-	node := ns.nodes[idx]
+	node := nodeList[idx]
 
-	// Update usage statistics
-	ns.nodeUsage[node]++
-
-	// Advance to next node for next call
-	ns.nextNodeIndex[position] = (idx + 1) % len(ns.nodes)
+	// Update index for next call
+	ns.nextNodeIndex[position] = (idx + 1) % len(nodeList)
 
 	return node
 }
 
-// GetLeastUsedNode returns the node with the least usage count
+// CheckNodeStatuses performs a health check on all nodes and updates their status
+func (ns *NodeSelector) CheckNodeStatuses() {
+	ns.mutex.Lock()
+	defer ns.mutex.Unlock()
+
+	if len(ns.nodes) == 0 {
+		return
+	}
+
+	fmt.Println("Checking status of all nodes...")
+
+	// Check each node's health
+	var healthyCount int
+	for _, node := range ns.nodes {
+		healthy, err := CheckNodeHealth(node)
+		ns.nodeHealth[node] = healthy
+
+		if healthy {
+			healthyCount++
+			fmt.Printf("Node %s is healthy\n", node)
+		} else {
+			errMsg := "unknown error"
+			if err != nil {
+				errMsg = err.Error()
+			}
+			fmt.Printf("Node %s is unhealthy: %s\n", node, errMsg)
+		}
+	}
+
+	fmt.Printf("Node health check complete: %d/%d nodes are healthy\n",
+		healthyCount, len(ns.nodes))
+
+	ns.lastHealthCheck = time.Now()
+}
+
+// GetLeastUsedNode returns the node with the least usage count, preferring healthy nodes
 func (ns *NodeSelector) GetLeastUsedNode() string {
-	ns.mutex.RLock()
-	defer ns.mutex.RUnlock()
+	ns.mutex.Lock()
+	defer ns.mutex.Unlock()
 
 	if len(ns.nodes) == 0 {
 		return ""
 	}
 
-	var leastUsedNode string
-	leastUsage := -1
+	// Check if we need to refresh node health
+	if time.Since(ns.lastHealthCheck) > ns.healthCheckInterval {
+		// Release lock during potentially long operation
+		ns.mutex.Unlock()
+		ns.CheckNodeStatuses()
+		ns.mutex.Lock()
+	}
 
+	var candidate string
+	var minUsage int = -1
+
+	// First try to find the least used healthy node
 	for _, node := range ns.nodes {
 		usage := ns.nodeUsage[node]
-		if leastUsage == -1 || usage < leastUsage {
-			leastUsage = usage
-			leastUsedNode = node
+		isHealthy, _ := ns.nodeHealth[node]
+
+		if isHealthy && (minUsage == -1 || usage < minUsage) {
+			minUsage = usage
+			candidate = node
 		}
 	}
 
-	return leastUsedNode
+	// If no healthy node found, fall back to any node
+	if candidate == "" {
+		for _, node := range ns.nodes {
+			usage := ns.nodeUsage[node]
+			if minUsage == -1 || usage < minUsage {
+				minUsage = usage
+				candidate = node
+			}
+		}
+	}
+
+	return candidate
 }
 
 // GetNodeUsage returns statistics about node usage
@@ -269,4 +379,135 @@ func (ns *NodeSelector) RecordUsage(nodeURL string) {
 	if _, exists := ns.nodeUsage[nodeURL]; exists {
 		ns.nodeUsage[nodeURL]++
 	}
+}
+
+// CheckNodeHealth tests if a node is responsive and ready to accept transactions
+func CheckNodeHealth(nodeURL string) (bool, error) {
+	// First check if node status endpoint is responsive (RPC test)
+	statusURL := fmt.Sprintf("%s/status", nodeURL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to create status request: %w", err)
+	}
+
+	// Set headers for better compatibility
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "Meteorite/1.0")
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 20,
+			IdleConnTimeout:     60 * time.Second,
+			TLSHandshakeTimeout: 5 * time.Second,
+			DisableKeepAlives:   false,
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("failed to get status: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("status endpoint returned %d", resp.StatusCode)
+	}
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, fmt.Errorf("failed to read status response: %w", err)
+	}
+
+	// Parse response to verify it's valid
+	var statusResp map[string]interface{}
+	if err := json.Unmarshal(body, &statusResp); err != nil {
+		return false, fmt.Errorf("failed to parse status response: %w", err)
+	}
+
+	// Check if the node is not catching up
+	result, hasResult := statusResp["result"].(map[string]interface{})
+	if hasResult {
+		syncInfo, hasSyncInfo := result["sync_info"].(map[string]interface{})
+		if hasSyncInfo {
+			catchingUp, ok := syncInfo["catching_up"].(bool)
+			if ok && catchingUp {
+				return false, fmt.Errorf("node is still syncing")
+			}
+
+			// Check if node has a reasonable latest block height
+			latestBlockHeight, ok := syncInfo["latest_block_height"].(string)
+			if ok {
+				height, err := strconv.ParseInt(latestBlockHeight, 10, 64)
+				if err == nil && height < 1 {
+					return false, fmt.Errorf("node has zero or invalid block height")
+				}
+			}
+		}
+	}
+
+	// Additional check: Make a small request to the mempool to see if that's responding too
+	mempoolURL := fmt.Sprintf("%s/unconfirmed_txs?limit=1", nodeURL)
+	mempoolReq, err := http.NewRequestWithContext(ctx, http.MethodGet, mempoolURL, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to create mempool request: %w", err)
+	}
+	mempoolReq.Header.Set("Accept", "application/json")
+
+	mempoolResp, err := client.Do(mempoolReq)
+	if err != nil {
+		return false, fmt.Errorf("mempool endpoint not responding: %w", err)
+	}
+	defer mempoolResp.Body.Close()
+
+	if mempoolResp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("mempool endpoint returned %d", mempoolResp.StatusCode)
+	}
+
+	// Node is healthy if we've made it here
+	return true, nil
+}
+
+// FilterHealthyNodes takes a list of RPC nodes and returns only those that are healthy
+func FilterHealthyNodes(nodes []string) []string {
+	if len(nodes) == 0 {
+		return nil
+	}
+
+	var healthyNodes []string
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	// Check all nodes concurrently
+	for _, node := range nodes {
+		wg.Add(1)
+		go func(url string) {
+			defer wg.Done()
+
+			healthy, err := CheckNodeHealth(url)
+			if healthy && err == nil {
+				mu.Lock()
+				healthyNodes = append(healthyNodes, url)
+				fmt.Printf("Node %s is healthy and ready\n", url)
+				mu.Unlock()
+			} else {
+				fmt.Printf("Node %s is unhealthy: %v\n", url, err)
+			}
+		}(node)
+	}
+
+	wg.Wait()
+
+	if len(healthyNodes) == 0 {
+		fmt.Println("Warning: No healthy nodes found! Using all provided nodes as fallback.")
+		return nodes // Fallback to all nodes if none are healthy
+	}
+
+	fmt.Printf("Found %d healthy nodes out of %d total nodes\n", len(healthyNodes), len(nodes))
+	return healthyNodes
 }

@@ -57,7 +57,7 @@ func SendTransactionViaGRPC(
 		}
 
 		// Create a context with timeout for just the broadcast operation
-		broadcastCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+		broadcastCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 
 		// Broadcast the transaction via gRPC

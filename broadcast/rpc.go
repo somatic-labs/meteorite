@@ -21,8 +21,8 @@ func SendTransactionViaRPC(
 	encodingConfig := params.MakeTestEncodingConfig()
 	encodingConfig.Codec = cdc
 
-	// Create a context with 120 seconds timeout to avoid context deadline exceeded
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	// Create a context with 15 seconds timeout to avoid context deadline exceeded
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	// Get the sequence manager for tracking sequences per node

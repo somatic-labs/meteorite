@@ -119,11 +119,19 @@ func Loop(
 	responseCodes = make(map[uint32]int)
 	sequence := txParams.Sequence
 
-	// Initialize and configure the NodeSelector
+	// Initialize and configure the NodeSelector with health checks
 	nodeSelector := GetNodeSelector()
 	if len(txParams.Config.Nodes.RPC) > 0 {
-		// Set all available RPC nodes
+		fmt.Printf("[POS-%d] Configuring NodeSelector with %d RPC nodes\n",
+			position, len(txParams.Config.Nodes.RPC))
+
+		// Set all available RPC nodes and filter for healthy ones
 		nodeSelector.SetNodes(txParams.Config.Nodes.RPC)
+
+		// Perform a health check to ensure we have responsive nodes
+		nodeSelector.CheckNodeStatuses()
+	} else {
+		fmt.Printf("[POS-%d] Warning: No RPC nodes configured in Config.Nodes.RPC\n", position)
 	}
 
 	// Get sequence manager to use node-specific sequence tracking
@@ -132,6 +140,13 @@ func Loop(
 	// We'll track sequences per node in this map
 	nodeSequences := make(map[string]uint64)
 	for _, nodeURL := range txParams.Config.Nodes.RPC {
+		// Check if this node is healthy before including it
+		healthy, _ := CheckNodeHealth(nodeURL)
+		if !healthy {
+			fmt.Printf("[POS-%d] Warning: Node %s appears unhealthy, may be skipped\n",
+				position, nodeURL)
+		}
+
 		// Get the node-specific sequence for each available node
 		nodeSequence, err := sequenceManager.GetSequence(txParams.AcctAddress, nodeURL, txParams.Config, false)
 		if err == nil {
@@ -145,7 +160,17 @@ func Loop(
 		} else {
 			// If we can't get a sequence, default to the provided one
 			nodeSequences[nodeURL] = sequence
+			fmt.Printf("[POS-%d] Using default sequence %d for node %s (error: %v)\n",
+				position, sequence, nodeURL, err)
 		}
+	}
+
+	// If we don't have any nodes with sequences, use the provided sequence
+	if len(nodeSequences) == 0 {
+		fmt.Printf("[POS-%d] No nodes have sequence information, using default sequence %d\n",
+			position, sequence)
+		// Just use the default node from the txParams
+		nodeSequences[txParams.NodeURL] = sequence
 	}
 
 	// Log the start of broadcasting for this position

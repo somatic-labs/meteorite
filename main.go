@@ -320,19 +320,42 @@ func prepareTransactionParams(
 	// Get node selector to distribute transactions across nodes
 	nodeSelector := broadcast.GetNodeSelector()
 	if len(config.Nodes.RPC) > 0 {
+		// Initialize node selector with health checks
+		fmt.Printf("Position %d: Initializing node selector with %d RPC endpoints\n",
+			acct.Position, len(config.Nodes.RPC))
 		nodeSelector.SetNodes(config.Nodes.RPC)
+	} else {
+		fmt.Printf("Warning: No RPC nodes configured in config.Nodes.RPC\n")
 	}
 
+	// Select the appropriate node based on availability
 	if len(config.Nodes.RPC) > 0 {
 		if distributor != nil {
 			// Use the distributed approach with multiple RPCs
 			nodeURL = distributor.GetNextRPC()
+			fmt.Printf("Position %d: Using distributor-selected node %s\n",
+				acct.Position, nodeURL)
 		} else {
-			// Use the node selector to get the least used node
+			// First try to get a least used node (with health check)
 			nodeURL = nodeSelector.GetLeastUsedNode()
+
 			if nodeURL == "" {
-				// Fallback to the first node if selection fails
-				nodeURL = config.Nodes.RPC[0]
+				// If no healthy node found, try position-based selection
+				nodeURL = nodeSelector.GetNextNode(acct.Position)
+				fmt.Printf("Position %d: Using position-based node selection: %s\n",
+					acct.Position, nodeURL)
+			} else {
+				fmt.Printf("Position %d: Using least-used node: %s\n",
+					acct.Position, nodeURL)
+			}
+
+			if nodeURL == "" {
+				// Final fallback to the first node if selection fails
+				if len(config.Nodes.RPC) > 0 {
+					nodeURL = config.Nodes.RPC[0]
+					fmt.Printf("Position %d: Fallback to first configured node: %s\n",
+						acct.Position, nodeURL)
+				}
 			}
 		}
 	}
@@ -340,9 +363,21 @@ func prepareTransactionParams(
 	// If no node URL is available, use a default
 	if nodeURL == "" {
 		nodeURL = "http://localhost:26657"
+		fmt.Printf("Position %d: Using default localhost node\n", acct.Position)
 	}
 
-	fmt.Printf("Position %d: Selected node %s for initial transactions\n", acct.Position, nodeURL)
+	// Verify node connection before proceeding
+	healthy, err := broadcast.CheckNodeHealth(nodeURL)
+	if !healthy {
+		errMsg := "unknown error"
+		if err != nil {
+			errMsg = err.Error()
+		}
+		fmt.Printf("Warning: Selected node %s appears unhealthy: %s\n", nodeURL, errMsg)
+		fmt.Printf("Proceeding anyway, but expect potential transaction failures\n")
+	} else {
+		fmt.Printf("Node %s verified healthy and ready for transactions\n", nodeURL)
+	}
 
 	// Get message type - either from config or default to bank_send
 	txMsgType := config.MsgType
@@ -557,7 +592,7 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	maxRetries := 3

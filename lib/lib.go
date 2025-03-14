@@ -156,7 +156,7 @@ func GetChainID(nodeURL string) (string, error) {
 }
 
 func HTTPGet(url string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	log.Printf("Sending HTTP GET request to: %s", url)
@@ -391,7 +391,7 @@ func GetAccountBalance(address string, config types.Config) (sdkmath.Int, error)
 	log.Printf("Fetching balance from API: %s", apiUrl)
 
 	// Create a context with timeout for the HTTP request
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	// Create a request with context

@@ -601,7 +601,7 @@ func BuildAndSignTransaction(
 	}
 
 	// Calculate fee based on gas limit and price
-	feeAmount := int64(gasLimit) * gasPrice / 100000 // Scale to make fees reasonable
+	feeAmount := int64(gasLimit) * gasPrice / 1000 // Scale to make fees reasonable
 	if feeAmount < 1 && gasPrice > 0 {
 		feeAmount = 1 // Ensure minimum fee for non-zero gas price
 	}

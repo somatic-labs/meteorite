@@ -52,8 +52,8 @@ func GetClient(rpcEndpoint string) (*Client, error) {
 }
 
 func (b *Client) Transaction(txBytes []byte) (*coretypes.ResultBroadcastTx, error) {
-	// Increase timeout to 60 seconds for large multisend transactions
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	// Increase timeout to 15 seconds for large transactions and slow networks
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	t := tmtypes.Tx(txBytes)
@@ -63,7 +63,12 @@ func (b *Client) Transaction(txBytes []byte) (*coretypes.ResultBroadcastTx, erro
 	if err != nil {
 		// Check for specific error types
 		if strings.Contains(err.Error(), "timed out") {
-			return nil, fmt.Errorf("broadcast timed out (transaction may still be processed): %w", err)
+			return nil, fmt.Errorf("broadcast timed out after 15s (transaction may still be processed): %w", err)
+		}
+		if strings.Contains(err.Error(), "connection refused") ||
+			strings.Contains(err.Error(), "dial tcp") ||
+			strings.Contains(err.Error(), "connection reset by peer") {
+			return nil, fmt.Errorf("node connectivity issue - node may be offline or unreachable: %w", err)
 		}
 		return nil, err
 	}
