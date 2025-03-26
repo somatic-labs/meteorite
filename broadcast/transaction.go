@@ -995,7 +995,7 @@ func retryWithCorrectedSequence(
 ) (*sdk.TxResponse, error) {
 	// Get updated sequence from error if possible
 	// This is a fallback - our ProcessBroadcastResponse should already have updated the sequence
-	correctSeq := sequence
+	var correctSeq uint64
 
 	seqRegex := regexp.MustCompile(sequenceMismatchPattern)
 	if matches := seqRegex.FindStringSubmatch(originalError.Error()); len(matches) > 1 {
