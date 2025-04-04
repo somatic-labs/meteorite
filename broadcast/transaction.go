@@ -546,6 +546,16 @@ func calculateInitialFee(gasLimit uint64, gasPrice int64) int64 {
 	return feeAmount
 }
 
+// isValidMessageType checks if the given message type is supported
+func isValidMessageType(msgType string) bool {
+	validTypes := map[string]bool{
+		MsgTypeBankSend:      true,
+		MsgTypeBankMultisend: true,
+		// Add other valid message types here
+	}
+	return validTypes[msgType]
+}
+
 // BuildAndSignTransaction builds and signs a transaction with proper error handling
 func BuildAndSignTransaction(
 	ctx context.Context,
@@ -553,6 +563,21 @@ func BuildAndSignTransaction(
 	sequence uint64,
 	_ interface{},
 ) ([]byte, error) {
+	// Validate message type first
+	if !isValidMessageType(txParams.MsgType) {
+		return nil, fmt.Errorf("unsupported message type")
+	}
+
+	// Validate private key and address first
+	if txParams.PrivKey == nil {
+		return nil, fmt.Errorf("invalid from address: empty address string is not allowed")
+	}
+
+	// Then validate chain ID
+	if txParams.ChainID == "" {
+		return nil, fmt.Errorf("chain ID cannot be empty")
+	}
+
 	// First, check if we have more up-to-date sequence info for this node from previous errors
 	nodeSettings := getNodeSettings(txParams.NodeURL)
 	nodeSettings.mutex.RLock()

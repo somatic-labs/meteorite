@@ -514,6 +514,12 @@ func adjustBalances(accounts []types.Account, balances map[string]sdkmath.Int, c
 }
 
 func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.Int, config types.Config) error {
+	// Get sequence and account number first
+	sequence, accNum, err := lib.GetAccountInfo(sender.Address, config)
+	if err != nil {
+		return fmt.Errorf("failed to get account info: %w", err)
+	}
+
 	// Create a transaction params struct for the funds transfer
 	txParams := types.TransactionParams{
 		Config:      config,
@@ -529,6 +535,8 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 			"amount":       amount.Int64(),
 			"denom":        config.Denom,
 		},
+		Sequence: sequence,
+		AccNum:   accNum,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -548,33 +556,11 @@ func TransferFunds(sender types.Account, receiverAddress string, amount sdkmath.
 		resp, _, err := broadcast.SendTransactionViaGRPC(ctx, txParams, txParams.Sequence, grpcClient)
 		if err != nil {
 			fmt.Printf("Transaction failed: %v\n", err)
-
-			// Check if the error is a sequence mismatch error
-			if resp != nil && resp.Code == 32 {
-				expectedSeq, parseErr := lib.ExtractExpectedSequence(resp.RawLog)
-				if parseErr == nil {
-					// Update sequence and retry
-					txParams.Sequence = expectedSeq
-					fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", expectedSeq)
-					continue
-				}
-			}
 			continue
 		}
 
 		if resp.Code != 0 {
 			fmt.Printf("Transaction failed with code %d: %s\n", resp.Code, resp.RawLog)
-
-			// Check for sequence mismatch error
-			if resp.Code == 32 {
-				expectedSeq, parseErr := lib.ExtractExpectedSequence(resp.RawLog)
-				if parseErr == nil {
-					// Update sequence and retry
-					txParams.Sequence = expectedSeq
-					fmt.Printf("Sequence mismatch detected. Updating sequence to %d and retrying...\n", expectedSeq)
-					continue
-				}
-			}
 			return fmt.Errorf("transaction failed with code %d: %s", resp.Code, resp.RawLog)
 		}
 

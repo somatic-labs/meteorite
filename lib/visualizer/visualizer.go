@@ -11,6 +11,7 @@ import (
 	"github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/fatih/color"
 	"github.com/somatic-labs/meteorite/lib/peerdiscovery"
+	"github.com/somatic-labs/meteorite/lib/snapshotter"
 )
 
 // MempoolStats contains mempool information for a node
@@ -58,6 +59,7 @@ type Visualizer struct {
 	debugLog      []string
 	ticker        *time.Ticker
 	logFile       *os.File
+	snapshotView  *SnapshotterView
 }
 
 // New creates a new visualizer instance
@@ -102,6 +104,12 @@ func New(endpoints []string) *Visualizer {
 	}
 
 	return v
+}
+
+// SetSnapshotter sets the snapshotter view
+func (v *Visualizer) SetSnapshotter(s *snapshotter.Snapshotter) {
+	v.snapshotView = NewSnapshotterView(s)
+	s.SetProgressCallback(v.snapshotView.UpdateProgress)
 }
 
 // Start begins the visualization
@@ -389,7 +397,7 @@ func (v *Visualizer) discoverNodes() {
 	v.AddDebugLog(fmt.Sprintf("Discovery complete. Found %d new nodes", count))
 }
 
-// printStats prints current statistics to the console
+// printStats prints the current statistics
 func (v *Visualizer) printStats() {
 	v.statsMutex.RLock()
 	defer v.statsMutex.RUnlock()
@@ -458,17 +466,21 @@ func (v *Visualizer) printStats() {
 	drawASCIIChart(v.chartData)
 	fmt.Println("")
 
+	// Print snapshot progress if available
+	if v.snapshotView != nil {
+		fmt.Println(v.snapshotView.Render())
+	}
+
 	// Log to file
 	if v.logFile != nil {
-		fmt.Fprintf(v.logFile, "\n=== METEORITE TXN STATS ===\n")
-		fmt.Fprintf(v.logFile, "Time: %s\n", time.Now().Format(time.RFC3339))
-		fmt.Fprintf(v.logFile, "Total Txs: %d | Successful: %d | Failed: %d | Success Rate: %.2f%%\n",
-			v.txStats.TotalTxs, v.txStats.SuccessfulTxs, v.txStats.FailedTxs, calcSuccessRate(v.txStats))
-		fmt.Fprintf(v.logFile, "TPS: %.2f | Avg Latency: %dms | Latest Block: %d\n",
+		fmt.Fprintf(v.logFile, "\n=== Stats Update @ %s ===\n", time.Now().Format(time.RFC3339))
+		fmt.Fprintf(v.logFile, "Total Txs: %d (Success: %d, Failed: %d)\n",
+			v.txStats.TotalTxs, v.txStats.SuccessfulTxs, v.txStats.FailedTxs)
+		fmt.Fprintf(v.logFile, "TPS: %.2f | Avg Latency: %dms | Block: %d\n",
 			v.txStats.TPS, v.txStats.AverageLatency.Milliseconds(), v.txStats.BlockHeight)
-		fmt.Fprintf(v.logFile, "Nodes: %d | Online: %d | Syncing: %d | Offline: %d\n",
+		fmt.Fprintf(v.logFile, "Nodes: %d (Online: %d, Syncing: %d, Offline: %d)\n",
 			len(v.nodeStatus), online, syncing, offline)
-		fmt.Fprintf(v.logFile, "Mempool Txs: %d | Size: %s\n", totalTxs, sizeStr)
+		fmt.Fprintf(v.logFile, "Mempool: %d txs, %s\n", totalTxs, sizeStr)
 	}
 }
 
